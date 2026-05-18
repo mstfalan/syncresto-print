@@ -67,7 +67,7 @@ jobs:
             /td SHA256 `
             /tr "http://timestamp.digicert.com" `
             /sha1 $thumbprint `
-            /d "SyncResto Caller ID" `
+            /d "SyncResto Print" `
             /du "https://syncresto.com" `
             "$exePath"
 
@@ -84,50 +84,55 @@ jobs:
         shell: pwsh
         run: |
           cd build/windows/x64/runner/Release
-          Compress-Archive -Path * -DestinationPath ../../../../../SyncResto-CallerID-Windows.zip -Force
+          Compress-Archive -Path * -DestinationPath ../../../../../SyncResto-Print-Windows.zip -Force
 
       - name: Calculate SHA-256 checksum
         id: checksum
         shell: pwsh
         run: |
-          $hash = (Get-FileHash -Path "SyncResto-CallerID-Windows.zip" -Algorithm SHA256).Hash
+          $hash = (Get-FileHash -Path "SyncResto-Print-Windows.zip" -Algorithm SHA256).Hash
           Write-Host "SHA256: $hash"
           "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload Windows Build (Artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: SyncResto-CallerID-Windows
-          path: SyncResto-CallerID-Windows.zip
+          name: SyncResto-Print-Windows
+          path: SyncResto-Print-Windows.zip
           retention-days: 30
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}-${{ github.run_number }}
-          name: SyncResto Caller ID v${{ steps.version.outputs.version }} (build ${{ github.run_number }})
+          name: SyncResto Print v${{ steps.version.outputs.version }} (build ${{ github.run_number }})
           body: |
-            ## SyncResto Caller ID v${{ steps.version.outputs.version }}
+            ## SyncResto Print v${{ steps.version.outputs.version }}
 
-            Restoran gelen arama yöneticisi — CIDShow donanımı ile entegre.
+            Online sipariş termal yazıcı uygulaması — Web ve marketplace siparişleri otomatik fişe basar.
 
             ### Windows Kurulum
-            1. `SyncResto-CallerID-Windows.zip` indir + çıkart
-            2. `SyncResto Caller ID.exe`'yi çalıştır
-            3. Setup ekranında admin panelden aldığın `SR_CID_xxx` integration key'i gir
-            4. CIDShow USB cihazını tak — sağ üst pill "Cihaz Bağlı" olur
-            5. Telefon çaldığında otomatik müşteri kartı açılır
+            1. `SyncResto-Print-Windows.zip` indir + çıkart
+            2. `syncresto_print.exe`'yi çalıştır
+            3. Setup ekranında admin panelden aldığın `SR_PRT_xxx` print key'i gir
+            4. Yazıcı Ayarları'ndan termal yazıcı(lar)ı kontrol et + test fişi at
+            5. Sipariş geldiğinde otomatik fişe basar — ürün → yazıcı eşleştirmesi `panel.syncresto.com → POS → Ürünler` sayfasından
 
             ### Özellikler
-            - CIDShow USB Caller ID donanım entegrasyonu (cid.dll FFI)
-            - panel.syncresto.com integration key auth
-            - Canlı çağrı takibi + geçmiş + müşteri detay modal
-            - Test mode (`softTest.txt` toggle ile cihazsız test)
+            - Online sipariş otomatik yazdırma (web + Getir + Trendyol + Yemeksepeti + Migros)
+            - Çoklu yazıcı routing (her ürün kendi yazıcısına — POS pattern)
+            - SQLite print queue + 5sn arka plan retry (offline-first)
+            - Yazıcı fail pop-up + manuel tekrar yazdır
+            - Yazıcı atanmamış ürün uyarısı (kullanıcı panelden eşleştirir)
+            - İptal fişi (POS pattern)
+            - Sesli bildirim (açılıp kapatılabilir)
+            - Otomatik güncelleme kontrolü
+            - ESC/POS termal yazıcı (TCP/IP port 9100, 80mm)
 
             ### İmza
             - Self-signed (SyncResto)
             - SHA-256: `${{ steps.checksum.outputs.sha256 }}`
-          files: SyncResto-CallerID-Windows.zip
+          files: SyncResto-Print-Windows.zip
           draft: false
           prerelease: false
         env:
