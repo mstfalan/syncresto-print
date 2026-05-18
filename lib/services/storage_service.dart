@@ -1,0 +1,66 @@
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// SyncResto Print — SharedPreferences sarmalayıcısı.
+/// 18 May 2026: Sadece ses + auto-update toggle eklendi.
+/// Yazıcı routing PANELDEN gelir (panel_products.printer_id) — burada manuel mapping YOK.
+class StorageService {
+  static final StorageService _instance = StorageService._internal();
+  factory StorageService() => _instance;
+  StorageService._internal();
+
+  static const _keyApiUrl = 'api_url';
+  static const _keyApiKey = 'api_key';
+  static const _keyRestaurantName = 'restaurant_name';
+  static const _keyAutoPrint = 'auto_print';
+  static const _keySelectedPrinterId = 'selected_printer_id'; // fallback: backend'de printer atanmamis urunler icin
+
+  // 18 May 2026: Yeni alanlar
+  static const _keySoundEnabled = 'sound_enabled';            // ses on/off (default true)
+  static const _keyAutoUpdateCheck = 'auto_update_check';     // default true
+
+  late SharedPreferences _prefs;
+  bool _initialized = false;
+
+  Future<void> init() async {
+    if (_initialized) return;
+    _prefs = await SharedPreferences.getInstance();
+    _initialized = true;
+  }
+
+  // === API & Tenant ===
+  String? getApiUrl() => _prefs.getString(_keyApiUrl);
+  Future<void> saveApiUrl(String url) => _prefs.setString(_keyApiUrl, url);
+
+  String? getApiKey() => _prefs.getString(_keyApiKey);
+  Future<void> saveApiKey(String key) => _prefs.setString(_keyApiKey, key);
+
+  String? getRestaurantName() => _prefs.getString(_keyRestaurantName);
+  Future<void> saveRestaurantName(String name) => _prefs.setString(_keyRestaurantName, name);
+
+  // === Auto print ===
+  bool getAutoPrint() => _prefs.getBool(_keyAutoPrint) ?? true;
+  Future<void> saveAutoPrint(bool v) => _prefs.setBool(_keyAutoPrint, v);
+
+  // === Fallback default yazıcı (panel'de printer_id atanmamis urunler icin) ===
+  int? getSelectedPrinterId() => _prefs.getInt(_keySelectedPrinterId);
+  Future<void> saveSelectedPrinterId(int id) => _prefs.setInt(_keySelectedPrinterId, id);
+  Future<void> clearSelectedPrinter() => _prefs.remove(_keySelectedPrinterId);
+  int? getDefaultPrinterId() => getSelectedPrinterId();
+
+  // === Ses on/off (default acik) ===
+  bool getSoundEnabled() => _prefs.getBool(_keySoundEnabled) ?? true;
+  Future<void> saveSoundEnabled(bool v) => _prefs.setBool(_keySoundEnabled, v);
+
+  // === Auto-update check (default acik) ===
+  bool getAutoUpdateCheck() => _prefs.getBool(_keyAutoUpdateCheck) ?? true;
+  Future<void> saveAutoUpdateCheck(bool v) => _prefs.setBool(_keyAutoUpdateCheck, v);
+
+  // === Logout / reset ===
+  Future<void> clearAll() async {
+    await _prefs.remove(_keyApiUrl);
+    await _prefs.remove(_keyApiKey);
+    await _prefs.remove(_keyRestaurantName);
+    await _prefs.remove(_keySelectedPrinterId);
+    // ses ve auto-print tercihleri silinmez (kullanici tercihi)
+  }
+}

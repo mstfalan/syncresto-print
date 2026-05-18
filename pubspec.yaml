@@ -1,7 +1,7 @@
-name: syncresto_caller_id
-description: "SyncResto Caller ID — Restoran gelen arama yöneticisi"
+name: syncresto_print
+description: "SyncResto Print — Online sipariş yazıcı uygulaması (Marketplace + Web siparişleri otomatik fişe basar)"
 publish_to: 'none'
-version: 0.1.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ^3.11.0
@@ -10,25 +10,22 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  # POS app pattern (network, state, storage)
+  # Network + state + storage
   dio: ^5.9.1
-  provider: ^6.1.5+1
   shared_preferences: ^2.5.4
-  sqflite: ^2.4.2
-  sqflite_common_ffi: ^2.3.4+4
-  path: ^1.9.1
-  path_provider: ^2.1.5
-  connectivity_plus: ^6.1.4
   socket_io_client: ^3.0.2
-  audioplayers: ^6.1.0
-  uuid: ^4.5.1
+  intl: ^0.19.0
+  # Yazıcı (ESC/POS termal)
+  esc_pos_utils: ^1.1.0
+  # Log servisi için (LogService dependency'leri)
   device_info_plus: ^10.1.2
   package_info_plus: ^8.0.3
-  crypto: ^3.0.3
-  intl: ^0.19.0
-  # Caller ID specific
-  flutter_secure_storage: ^9.2.2
-  ffi: ^2.1.3
+  path_provider: ^2.1.5
+  # 18 May 2026 — yeni ozellikler
+  sqflite_common_ffi: ^2.3.6        # Print queue (offline-first, masaustu icin FFI)
+  audioplayers: ^6.5.0              # Ses bildirimi (yeni sipariş)
+  url_launcher: ^6.3.2              # Auto-update download URL
+  http: ^1.5.0                      # Update version check (Dio yerine basit GET)
 
 dev_dependencies:
   flutter_test:
@@ -38,6 +35,5 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/cid/cid_x64.dll
-    - assets/cid/cid_x86.dll
     - assets/images/logo.png
+    - assets/sounds/new_order.mp3
