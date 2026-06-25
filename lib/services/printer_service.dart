@@ -22,6 +22,16 @@ class PrinterService {
     _selectedPrinter = p;
   }
 
+  /// Güvenli sayı dönüşümü. PostgreSQL numeric kolonları JSON'da STRING gelir
+  /// ("320.00") → 'as num' cast patlıyordu (type 'String' is not a subtype of
+  /// type 'num' in type cast). num, String, null hepsini güvenli işler.
+  static double _toDouble(dynamic v, {double fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v.trim().replaceAll(',', '.')) ?? fallback;
+    return fallback;
+  }
+
   /// Online sipariş fişi yazdır.
   /// [printers] verilirse o yazıcılara, yoksa _selectedPrinter'a gönderir.
   /// [department] = 'KASA' ise totals/odeme dahil; 'MUTFAK' ise sadece urun listesi.
@@ -301,10 +311,10 @@ class PrinterService {
     // ===== TOTALS (sadece KASA fişinde) =====
     final isKasa = department.toUpperCase() == 'KASA';
     if (isKasa) {
-      final subtotal = ((order['subtotal'] ?? 0) as num).toDouble();
-      final deliveryFee = ((order['delivery_fee'] ?? 0) as num).toDouble();
-      final discountAmount = ((order['discount_amount'] ?? order['discount'] ?? 0) as num).toDouble();
-      final total = ((order['total'] ?? subtotal) as num).toDouble();
+      final subtotal = _toDouble(order['subtotal']);
+      final deliveryFee = _toDouble(order['delivery_fee']);
+      final discountAmount = _toDouble(order['discount_amount'] ?? order['discount']);
+      final total = _toDouble(order['total'], fallback: subtotal);
 
       if (subtotal > 0) {
         bytes += generator.row([
