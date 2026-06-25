@@ -32,6 +32,11 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# 25 Haz 2026: Yeni MSVC (VS18 / 14.51) <experimental/coroutine>'u kaldırma kararı
+# aldı; audioplayers_windows plugin'i C2338/STL1011 ile build'i kırıyordu.
+# Bu define tüm hedeflerde (plugin'ler dahil) uyarıyı bastırır → build geçer.
+add_definitions(-D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
