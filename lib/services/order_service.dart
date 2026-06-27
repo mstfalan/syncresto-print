@@ -18,6 +18,7 @@
 // =============================================================================
 
 import 'dart:async';
+import 'dart:convert'; // 27 Haz 2026: server-side ESC/POS base64 decode
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_service.dart';
@@ -193,7 +194,30 @@ class OrderService {
       partialTicket['_print_printer'] = printerName ?? '';
 
       try {
-        final bytes = await _printer.generateOrderReceiptBytes(partialTicket, 'KASA');
+        // 27 Haz 2026: SERVER-SIDE ESC/POS (bayrak aciksa). Sunucudan hazir byte cek;
+        // null/hata -> mevcut Flutter render'a FALLBACK (davranis birebir korunur).
+        List<int>? bytes;
+        if (_storage.getServerSideReceipt()) {
+          try {
+            final esc = await _api.getOrderEscpos(orderId, printerId: printerId, paperWidth: 80, department: 'KASA');
+            final groups = (esc?['groups'] as List?) ?? [];
+            // Bu yaziciya ait grubu bul (printer_id ile); yoksa tek grup varsa onu al.
+            Map<String, dynamic>? mg;
+            for (final x in groups) {
+              if (x is Map && _intOrNull(x['printer_id']) == printerId) { mg = x.cast<String, dynamic>(); break; }
+            }
+            mg ??= (groups.length == 1 && groups.first is Map) ? (groups.first as Map).cast<String, dynamic>() : null;
+            final b64 = mg?['escpos_base64']?.toString();
+            if (b64 != null && b64.isNotEmpty) {
+              bytes = base64Decode(b64);
+              _log.logAction('Server-side ESC/POS kullanildi: $orderNumber → $printerName');
+            }
+          } catch (e) {
+            _log.warning(LogType.action, 'Server-side ESC/POS alinamadi, eski render fallback: $e');
+          }
+        }
+        // Fallback / bayrak kapali: mevcut Flutter render (DEGISMEDI)
+        bytes ??= await _printer.generateOrderReceiptBytes(partialTicket, 'KASA');
         final ok = await _printer.sendRawToIp(ip, port, bytes);
         if (ok) {
           successCount++;

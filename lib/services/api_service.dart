@@ -130,6 +130,26 @@ class ApiService {
     }
   }
 
+  /// 27 Haz 2026: SERVER-SIDE ESC/POS — sunucu hazir fis byte'i (base64) doner.
+  /// Bayrak (server_side_receipt) aciksa kullanilir; null donerse caller eski
+  /// generateOrderReceiptBytes()'a FALLBACK eder (mevcut davranis korunur).
+  /// Donen: { groups: [{printer_id, printer_ip, printer_port, paper_width, escpos_base64, ...}], ... }
+  Future<Map<String, dynamic>?> getOrderEscpos(int orderId,
+      {int? printerId, int paperWidth = 80, String department = 'KASA'}) async {
+    try {
+      final qp = <String, dynamic>{'paper_width': paperWidth, 'department': department};
+      if (printerId != null) qp['printer_id'] = printerId;
+      final response = await _dio.get('/api/print/orders/$orderId/escpos', queryParameters: qp);
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data);
+      }
+      return null;
+    } on DioException catch (e) {
+      print('[API] getOrderEscpos hatasi (fallback eski render): ${e.message}');
+      return null;
+    }
+  }
+
   /// 18 May 2026: order_number ile sipariş ara (WebSocket payload'da ID yoksa).
   /// Backend `/orders/recent` zaten order_number ile filtreliyor — sadece eşleseni döner.
   Future<Map<String, dynamic>?> findOrderByNumber(String orderNumber) async {

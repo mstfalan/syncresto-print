@@ -17,6 +17,7 @@ class StorageService {
   // 18 May 2026: Yeni alanlar
   static const _keySoundEnabled = 'sound_enabled';            // ses on/off (default true)
   static const _keyAutoUpdateCheck = 'auto_update_check';     // default true
+  static const _keyServerSideReceipt = 'server_side_receipt'; // 27 Haz 2026: sunucu ESC/POS (default KAPALI)
 
   late SharedPreferences _prefs;
   bool _initialized = false;
@@ -54,6 +55,12 @@ class StorageService {
   // === Auto-update check (default acik) ===
   bool getAutoUpdateCheck() => _prefs.getBool(_keyAutoUpdateCheck) ?? true;
   Future<void> saveAutoUpdateCheck(bool v) => _prefs.setBool(_keyAutoUpdateCheck, v);
+
+  // === Server-side ESC/POS (27 Haz 2026, default KAPALI) ===
+  // Acikken: fis byte'i sunucudan (panel /escpos) cekilir, tasarim sunucuda -> build'siz.
+  // Kapali/sunucu hata: mevcut Flutter render (generateOrderReceiptBytes) FALLBACK.
+  bool getServerSideReceipt() => _prefs.getBool(_keyServerSideReceipt) ?? false;
+  Future<void> saveServerSideReceipt(bool v) => _prefs.setBool(_keyServerSideReceipt, v);
 
   // === Logout / reset ===
   Future<void> clearAll() async {
