@@ -51,22 +51,31 @@ class PrintQueueService {
     _log.logAction('[PrintQueue] Otomatik retry durduruldu');
   }
 
+  // 28 Haz 2026 (Flutter POS şişme dersi): temizlik KOŞULSUZ periyodik olmalı.
+  // Eskiden cleanup sadece pending varken çağrılıyordu → kuyruk boşken eski completed/failed
+  // satırlar SONSUZA dek birikiyordu (POS'ta image_cache GB şişmesi aynı koşullu-temizlik bug'ı).
+  // Her ~5 dk'da bir (60 tur × 5sn) temizle, kuyruk dolu/boş fark etmez.
+  int _cleanupTick = 0;
+
   Future<void> _process() async {
     if (_processing) return;
     _processing = true;
     try {
       final pending = await _db.getPendingJobs();
-      if (pending.isEmpty) {
-        await _notifySummary();
-        return;
-      }
       for (final job in pending) {
         final id = job['id'] as int;
         await _processJob(id, job);
         await Future.delayed(const Duration(milliseconds: 400)); // yazıcıyı bogmayalim
       }
-      // Eski tamamlananlari temizle
-      await _db.cleanupOldCompleted();
+      // Periyodik temizlik — pending olsun olmasın (şişme önleme). ~5 dk'da bir.
+      _cleanupTick++;
+      if (_cleanupTick >= 60) {
+        _cleanupTick = 0;
+        await _db.cleanupOldJobs();
+      } else if (pending.isNotEmpty) {
+        // Aktif işlem sonrası completed satırları hızlıca temizle (badge doğru kalsın)
+        await _db.cleanupOldCompleted();
+      }
       await _notifySummary();
     } catch (e) {
       _log.error(LogType.error, '[PrintQueue] islem hata: $e');

@@ -117,9 +117,14 @@ class ApiService {
   /// Response: { ticket: {...}, printerGroups: [{printer_id, printer_name, printer_ip, printer_port, items[]}],
   ///             unassigned_items: [...] }
   /// Her group'u Flutter app ilgili yazıcıya gonderir. unassigned_items varsa uyari modal.
-  Future<Map<String, dynamic>?> getOrderPrintGroups(int orderId) async {
+  /// [auto] true → backend kaynak-bazlı otomatik-yazdırma kapalıysa printerGroups
+  /// BOŞ döner (skipped:'source_auto_print_off'). Otomatik akışta true, manuel reprint'te false.
+  Future<Map<String, dynamic>?> getOrderPrintGroups(int orderId, {bool auto = false}) async {
     try {
-      final response = await _dio.get('/api/print/orders/$orderId/print-groups');
+      final response = await _dio.get(
+        '/api/print/orders/$orderId/print-groups',
+        queryParameters: {if (auto) 'auto': 1},
+      );
       if (response.statusCode == 200 && response.data is Map) {
         return Map<String, dynamic>.from(response.data);
       }
@@ -227,6 +232,67 @@ class ApiService {
       return null;
     } on DioException catch (_) {
       return null;
+    }
+  }
+
+  // ==========================================================================
+  // 28 Haz 2026 — MÜŞTERİ/ÖZET FİŞİ online HTML (TEK KAYNAK, build-siz)
+  // Tasarim sunucuda (admin.js generateReceiptHTML + admin.css). Site degisince
+  // bu HTML de degisir. Flutter printing paketi ile OS yazicisina basilir.
+  // ==========================================================================
+
+  /// Online ozet fis ayari: { print_summary: bool, summary_printer_id: int?, mode: 'html'|'escpos' }
+  /// Backend /online-receipt-config (panel_settings online_order_print_summary + online_order_summary_printer_id).
+  Future<Map<String, dynamic>?> getOnlineReceiptConfig() async {
+    try {
+      final response = await _dio.get('/api/print/online-receipt-config');
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data);
+      }
+      return null;
+    } on DioException catch (e) {
+      print('[API] getOnlineReceiptConfig hatasi: ${e.message}');
+      return null;
+    }
+  }
+
+  /// Siparisin ONLINE HTML fisini ham string olarak getir (standalone, CSS+JS inline).
+  /// printing paketi bunu PDF'e cevirip yaziciya basar. ?noprint=1 onizleme (window.print yok).
+  Future<String?> getReceiptHtml(int orderId, {bool noprint = false}) async {
+    try {
+      final response = await _dio.get(
+        '/api/print/orders/$orderId/receipt-html',
+        queryParameters: {if (noprint) 'noprint': 1},
+        options: Options(responseType: ResponseType.plain),
+      );
+      if (response.statusCode == 200 && response.data is String) {
+        return response.data as String;
+      }
+      return null;
+    } on DioException catch (e) {
+      print('[API] getReceiptHtml hatasi: ${e.message}');
+      return null;
+    }
+  }
+
+  /// Reconnect telafisi: basilmamis (printed_at NULL) son siparisler.
+  /// auto=1 -> backend kaynak-bazli otomatik-yazdirma kapaliysa BOS doner (merkezi karar).
+  Future<List<Map<String, dynamic>>> getUnprintedOrders({int windowMin = 120, bool auto = true}) async {
+    try {
+      final response = await _dio.get('/api/print/orders/recent', queryParameters: {
+        'unprinted': 1,
+        'window_min': windowMin,
+        if (auto) 'auto': 1,
+      });
+      if (response.statusCode == 200 && response.data is List) {
+        return List<Map<String, dynamic>>.from(
+          (response.data as List).map((e) => Map<String, dynamic>.from(e)),
+        );
+      }
+      return [];
+    } on DioException catch (e) {
+      print('[API] getUnprintedOrders hatasi: ${e.message}');
+      return [];
     }
   }
 }

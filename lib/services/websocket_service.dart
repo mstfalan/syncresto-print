@@ -17,6 +17,9 @@ class WebSocketService {
   // Event callbacks
   Function(Map<String, dynamic>)? onNewOrder;
   Function(bool)? onConnectionChange;
+  // 28 Haz 2026: yeniden bağlanınca (reconnect) kaçan siparişleri telafi et.
+  // İlk bağlantı dahil her başarılı bağlantıda çağrılır (app açılışında kaçanlar da basılsın).
+  Future<void> Function()? onReconnected;
 
   bool get isConnected => _isConnected;
 
@@ -35,7 +38,9 @@ class WebSocketService {
       print('[WebSocket] Connecting to: $_serverUrl');
 
       _socket = IO.io(_serverUrl!, <String, dynamic>{
-        'transports': ['websocket'],
+        // 28 Haz 2026: websocket + polling — bazı ağlarda/proxy'lerde ham websocket
+        // kurulamaz, polling fallback ile bağlantı sağlanır (sipariş kaçmasın).
+        'transports': ['websocket', 'polling'],
         'autoConnect': true,
         'reconnection': true,
         'reconnectionDelay': 5000,
@@ -48,6 +53,11 @@ class WebSocketService {
         _isConnected = true;
         onConnectionChange?.call(true);
         _logService.info(LogType.general, 'WebSocket baglantisi kuruldu', details: {'server': _serverUrl});
+        // 28 Haz 2026: bağlantı kurulunca (ilk + her reconnect) kaçan siparişleri telafi et.
+        final cb = onReconnected;
+        if (cb != null) {
+          cb().catchError((e) => print('[WebSocket] onReconnected telafi hatasi: $e'));
+        }
       });
 
       _socket!.onDisconnect((_) {

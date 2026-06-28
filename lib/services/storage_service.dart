@@ -1,8 +1,12 @@
+import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// SyncResto Print — SharedPreferences sarmalayıcısı.
 /// 18 May 2026: Sadece ses + auto-update toggle eklendi.
 /// Yazıcı routing PANELDEN gelir (panel_products.printer_id) — burada manuel mapping YOK.
+/// 28 Haz 2026: Özet HTML fişi için panel printer_id → OS yazıcı adı eşleştirmesi eklendi
+///   (HTML, ESC/POS gibi ham IP:9100 değil, OS yazıcı sürücüsüyle basılır — bu yüzden
+///    panel yazıcısının hangi Windows yazıcısı olduğu lokal eşleştirilir).
 class StorageService {
   static final StorageService _instance = StorageService._internal();
   factory StorageService() => _instance;
@@ -18,6 +22,7 @@ class StorageService {
   static const _keySoundEnabled = 'sound_enabled';            // ses on/off (default true)
   static const _keyAutoUpdateCheck = 'auto_update_check';     // default true
   static const _keyServerSideReceipt = 'server_side_receipt'; // 27 Haz 2026: sunucu ESC/POS (default KAPALI)
+  static const _keyOsPrinterMap = 'os_printer_map';          // 28 Haz 2026: panel printer_id → OS yazıcı adı (özet HTML fişi)
 
   late SharedPreferences _prefs;
   bool _initialized = false;
@@ -61,6 +66,34 @@ class StorageService {
   // Kapali/sunucu hata: mevcut Flutter render (generateOrderReceiptBytes) FALLBACK.
   bool getServerSideReceipt() => _prefs.getBool(_keyServerSideReceipt) ?? false;
   Future<void> saveServerSideReceipt(bool v) => _prefs.setBool(_keyServerSideReceipt, v);
+
+  // === Özet HTML fişi: panel printer_id → OS yazıcı adı eşleştirmesi (28 Haz 2026) ===
+  // JSON: { "12": "POS-58 Termal", "7": "Mutfak Yazici" } (panel printer_id → Windows yazıcı adı)
+  Map<int, String> getOsPrinterMap() {
+    final raw = _prefs.getString(_keyOsPrinterMap);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final m = jsonDecode(raw) as Map<String, dynamic>;
+      return m.map((k, v) => MapEntry(int.tryParse(k) ?? -1, v.toString()))
+        ..removeWhere((k, v) => k < 0);
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Belirli panel printer_id'sine eşleştirilmiş OS yazıcı adı (yoksa null → yazdır penceresi).
+  String? getOsPrinterName(int panelPrinterId) => getOsPrinterMap()[panelPrinterId];
+
+  Future<void> saveOsPrinterName(int panelPrinterId, String? osName) async {
+    final map = getOsPrinterMap();
+    if (osName == null || osName.isEmpty) {
+      map.remove(panelPrinterId);
+    } else {
+      map[panelPrinterId] = osName;
+    }
+    final json = jsonEncode(map.map((k, v) => MapEntry(k.toString(), v)));
+    await _prefs.setString(_keyOsPrinterMap, json);
+  }
 
   // === Logout / reset ===
   Future<void> clearAll() async {

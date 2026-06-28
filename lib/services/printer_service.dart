@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'dart:async';
-import 'package:esc_pos_utils/esc_pos_utils.dart';
+import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
 
 import 'log_service.dart';
 import 'storage_service.dart';

@@ -13,7 +13,6 @@
 import 'dart:convert';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path_provider/path_provider.dart';
-import 'dart:io';
 
 class LocalDbService {
   static final LocalDbService _instance = LocalDbService._internal();
@@ -175,6 +174,21 @@ class LocalDbService {
     final db = await database;
     final oneHourAgo = DateTime.now().subtract(const Duration(hours: 1)).toIso8601String();
     await db.delete('print_queue', where: "status = 'completed' AND completed_at < ?", whereArgs: [oneHourAgo]);
+  }
+
+  /// 28 Haz 2026 (Flutter POS şişme dersi): KAPSAMLI periyodik temizlik.
+  /// - completed > 1 saat: sil (basılmış, gerek yok)
+  /// - failed > 7 gün: sil (kullanıcı 7 gün görsün, sonra kalıcı birikmesin)
+  /// Periyodik çağrılır (boot-only DEĞİL — POS'ta koşullu temizlik GB şişmesi yapmıştı).
+  /// Geçmiş sipariş DB'de TUTULMAZ; sadece yazıcı kuyruğu. VACUUM ile dosya fiilen küçülür.
+  Future<void> cleanupOldJobs() async {
+    final db = await database;
+    final now = DateTime.now();
+    final oneHourAgo = now.subtract(const Duration(hours: 1)).toIso8601String();
+    final sevenDaysAgo = now.subtract(const Duration(days: 7)).toIso8601String();
+    await db.delete('print_queue', where: "status = 'completed' AND completed_at < ?", whereArgs: [oneHourAgo]);
+    await db.delete('print_queue', where: "status = 'failed' AND last_attempt_at < ?", whereArgs: [sevenDaysAgo]);
+    try { await db.execute('VACUUM'); } catch (_) {}
   }
 
   /// Ozet: { pending: N, failed: N, completed: N }

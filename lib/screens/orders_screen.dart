@@ -290,8 +290,54 @@ class _OrdersScreenState extends State<OrdersScreen> {
     );
   }
 
+  // 28 Haz 2026 — TAM OTONOM GÜNCELLEME (Mustafa: "her şey tam otonom olsun").
+  // İlerleme dialog'u → indir+çıkar+kur → app kapanır, yeni sürüm otomatik açılır.
+  // Otonom kurulum başarısız → tarayıcı fallback.
+  Future<void> _runAutoUpdate(UpdateInfo info) async {
+    final url = info.downloadUrl;
+    if (url == null) return;
+    final progress = ValueNotifier<double>(0.0);
+    final durum = ValueNotifier<String>('Hazırlanıyor...');
+    _updateService.onProgress = (p, d) { progress.value = p; durum.value = d; };
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Text('Güncelleme'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          ValueListenableBuilder<double>(
+            valueListenable: progress,
+            builder: (_, v, __) => LinearProgressIndicator(value: v > 0 ? v : null),
+          ),
+          const SizedBox(height: 12),
+          ValueListenableBuilder<String>(
+            valueListenable: durum,
+            builder: (_, d, __) => Text(d, textAlign: TextAlign.center, style: const TextStyle(fontSize: 13)),
+          ),
+        ]),
+      ),
+    );
+
+    final ok = await _updateService.downloadAndInstall(url);
+    // ok=true ise app zaten exit(0) yaptı. Gelirsek otonom başarısız → fallback.
+    if (!ok && mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Otomatik kurulum yapılamadı, indirme sayfası açılıyor'),
+        backgroundColor: Color(0xFFF59E0B),
+      ));
+      await _updateService.openDownloadUrl(url);
+    }
+  }
+
   void _showUpdateBanner(UpdateInfo info) {
     if (!mounted) return;
+    // Kritik güncelleme → kullanıcıya sormadan OTONOM kur (Mustafa: tam otonom).
+    if (info.isCritical && info.downloadUrl != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _runAutoUpdate(info));
+      return;
+    }
     ScaffoldMessenger.of(context).showMaterialBanner(
       MaterialBanner(
         backgroundColor: info.isCritical ? const Color(0xFFFEE2E2) : const Color(0xFFDBEAFE),
@@ -309,10 +355,10 @@ class _OrdersScreenState extends State<OrdersScreen> {
             onPressed: () {
               ScaffoldMessenger.of(context).hideCurrentMaterialBanner();
               if (info.downloadUrl != null) {
-                _updateService.openDownloadUrl(info.downloadUrl!);
+                _runAutoUpdate(info);
               }
             },
-            child: const Text('İndir'),
+            child: const Text('Güncelle ve Yeniden Başlat'),
           ),
           TextButton(
             onPressed: () => ScaffoldMessenger.of(context).hideCurrentMaterialBanner(),

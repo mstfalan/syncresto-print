@@ -23,6 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_service.dart';
 import 'printer_service.dart';
+import 'html_print_service.dart'; // 28 Haz 2026: müşteri/özet HTML fişi
 import 'log_service.dart';
 import 'websocket_service.dart';
 import 'sound_service.dart';
@@ -36,11 +37,16 @@ class OrderService {
 
   final ApiService _api = ApiService();
   final PrinterService _printer = PrinterService();
+  final HtmlPrintService _htmlPrint = HtmlPrintService(); // 28 Haz 2026
   final LogService _log = LogService();
   final WebSocketService _ws = WebSocketService();
   final SoundService _sound = SoundService();
   final StorageService _storage = StorageService();
   final LocalDbService _db = LocalDbService();
+
+  // 28 Haz 2026: çift-basım önleme — bu oturumda işlenen sipariş id'leri.
+  // Reconnect telafisi ile WebSocket eventi aynı siparişi iki kez tetiklemesin.
+  final Set<int> _processedOrderIds = <int>{};
 
   /// UI listener — yeni sipariş geldi (kart listesini yenile)
   final List<void Function(Map<String, dynamic>)> _onNewOrderListeners = [];
@@ -75,6 +81,10 @@ class OrderService {
   void start() {
     _ws.onNewOrder = (orderData) async {
       await _handleIncomingOrder(orderData);
+    };
+    // 28 Haz 2026: socket bağlanınca (ilk + reconnect) kaçan siparişleri telafi et.
+    _ws.onReconnected = () async {
+      await printMissedOrders();
     };
   }
 
@@ -118,11 +128,46 @@ class OrderService {
       return;
     }
 
-    // 3) Backend'den printer grouplari al + bas
+    // Çift-basım önleme: bu sipariş bu oturumda zaten işlendiyse atla
+    // (WebSocket eventi + reconnect telafisi aynı siparişi iki kez tetikleyebilir).
+    if (_processedOrderIds.contains(orderId)) {
+      _log.logAction('Sipariş zaten işlendi, atlandi (çift-basım önleme): $orderNumber');
+      return;
+    }
+    _processedOrderIds.add(orderId);
+
+    // 3) Backend'den printer grouplari al + bas (mutfak ESC/POS + müşteri HTML özet)
     await _printOrderViaBackendGroups(orderId, orderNumber);
   }
 
-  /// Manuel "Tekrar Yazdir" UI butonu
+  // ==========================================================================
+  // 28 Haz 2026 — RECONNECT TELAFİSİ
+  // Socket koptuğunda kaçan siparişleri çek + bas. websocket_service onConnect'te
+  // (yeniden bağlanınca) çağrılır. Backend /orders/recent?unprinted=1 (printed_at NULL).
+  // auto=1 → kaynak-bazlı otomatik-yazdırma kapalıysa backend boş döner (merkezi karar).
+  // Çift-basım: _processedOrderIds + backend printed_at kontrolü.
+  // ==========================================================================
+  Future<void> printMissedOrders() async {
+    if (!_autoPrint) return;
+    try {
+      final missed = await _api.getUnprintedOrders(windowMin: 120);
+      if (missed.isEmpty) return;
+      _log.logAction('Reconnect telafisi: ${missed.length} basılmamış sipariş bulundu');
+      for (final o in missed) {
+        final id = _intOrNull(o['id']);
+        final no = o['order_number']?.toString() ?? '#?';
+        if (id == null) continue;
+        if (_processedOrderIds.contains(id)) continue;
+        _processedOrderIds.add(id);
+        await _printOrderViaBackendGroups(id, no);
+      }
+    } catch (e) {
+      _log.warning(LogType.action, 'Reconnect telafisi hatasi: $e');
+    }
+  }
+
+  /// Manuel "Tekrar Yazdir" UI butonu — kaynak-bazlı otomatik kontrolü BYPASS et
+  /// (kullanıcı bilerek bastırıyor, kapalı kaynak olsa bile bassın).
   Future<bool> reprintOrder(int orderId) async {
     final order = await _api.getOrder(orderId);
     if (order == null) {
@@ -130,15 +175,22 @@ class OrderService {
       return false;
     }
     final orderNumber = order['order_number']?.toString() ?? '#?';
-    return await _printOrderViaBackendGroups(orderId, orderNumber);
+    return await _printOrderViaBackendGroups(orderId, orderNumber, auto: false);
   }
 
-  /// Sipariş yazdir — backend printer grouplari ile (POS print-kitchen pattern)
-  Future<bool> _printOrderViaBackendGroups(int orderId, String orderNumber) async {
-    // Backend'den printer grouplari al
-    final data = await _api.getOrderPrintGroups(orderId);
+  /// Sipariş yazdir — backend printer grouplari ile (POS print-kitchen pattern).
+  /// [auto] true → kaynak-bazlı otomatik-yazdırma kontrolü uygulanır (kapalı kaynak basılmaz).
+  Future<bool> _printOrderViaBackendGroups(int orderId, String orderNumber, {bool auto = true}) async {
+    // Backend'den printer grouplari al (auto=1 → kapalı kaynak boş döner)
+    final data = await _api.getOrderPrintGroups(orderId, auto: auto);
     if (data == null) {
       _log.error(LogType.error, 'Printer grouplari alinamadi', details: {'order_id': orderId});
+      return false;
+    }
+
+    // Kaynak-bazlı otomatik-yazdırma kapalı → backend boş döndü, basma (merkezi karar).
+    if (data['skipped'] == 'source_auto_print_off') {
+      _log.logAction('Otomatik yazdırma bu kaynak için kapalı (panel #pos-printers): $orderNumber');
       return false;
     }
 
@@ -270,6 +322,11 @@ class OrderService {
       }
     }
 
+    // 28 Haz 2026: MÜŞTERİ/ÖZET FİŞİ (online HTML). Mutfak ürün fişlerinden AYRI.
+    // panel #pos-printers "Özet Fiş Yazıcısı" (online_order_summary_printer_id) +
+    // online_order_print_summary='1' ise basılır. Mutfak ESC/POS akışı etkilenmez.
+    await _printCustomerSummaryHtml(orderId, orderNumber);
+
     // Backend mark — en az 1 başarılıysa
     if (successCount > 0) {
       await _api.markOrderPrinted(orderId);
@@ -345,6 +402,50 @@ class OrderService {
       );
     }
     return ok;
+  }
+
+  // ==========================================================================
+  // 28 Haz 2026 — MÜŞTERİ/ÖZET FİŞİ (online HTML, TEK KAYNAK)
+  // Tasarım = onlinedeki HTML (backend /orders/:id/receipt-html → admin.js
+  // generateReceiptHTML + admin.css). printing paketi ile OS yazıcısına basar.
+  // Yazıcı = panel "Özet Fiş Yazıcısı" (online_order_summary_printer_id) ↔ lokal
+  // eşleştirilmiş OS yazıcı adı. İZOLE: mutfak ESC/POS akışına dokunmaz.
+  // ==========================================================================
+  Future<void> _printCustomerSummaryHtml(int orderId, String orderNumber) async {
+    try {
+      final cfg = await _api.getOnlineReceiptConfig();
+      // Özet fişi kapalıysa hiç basma (panel ayarı)
+      if (cfg == null || cfg['print_summary'] != true) return;
+
+      final summaryPrinterId = _intOrNull(cfg['summary_printer_id']);
+      if (summaryPrinterId == null) {
+        _log.warning(LogType.action,
+          'Özet fişi açık ama "Özet Fiş Yazıcısı" seçili değil (panel #pos-printers) — atlandi',
+          details: {'order_id': orderId});
+        return;
+      }
+
+      // panel printer_id → lokal eşleştirilmiş OS yazıcı adı
+      final osPrinterName = _storage.getOsPrinterName(summaryPrinterId);
+
+      // Online HTML fişini backend'den al (TEK KAYNAK)
+      final html = await _api.getReceiptHtml(orderId);
+      if (html == null || html.isEmpty) {
+        _log.warning(LogType.action, 'Özet HTML fişi alinamadi: $orderNumber', details: {'order_id': orderId});
+        return;
+      }
+
+      final ok = await _htmlPrint.printHtmlToOsPrinter(html, osPrinterName);
+      if (ok) {
+        _log.logAction('Müşteri özet fişi basildi: $orderNumber → '
+          '${osPrinterName ?? "yazdır penceresi"}');
+      } else {
+        _log.warning(LogType.error, 'Müşteri özet fişi BASILAMADI: $orderNumber',
+          details: {'order_id': orderId, 'os_printer': osPrinterName});
+      }
+    } catch (e) {
+      _log.error(LogType.error, 'Özet HTML fişi hatasi: $e', details: {'order_id': orderId});
+    }
   }
 
   int? _intOrNull(dynamic v) {
