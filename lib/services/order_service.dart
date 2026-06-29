@@ -23,7 +23,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_service.dart';
 import 'printer_service.dart';
-import 'html_print_service.dart'; // 28 Haz 2026: müşteri/özet HTML fişi
 import 'log_service.dart';
 import 'websocket_service.dart';
 import 'sound_service.dart';
@@ -37,7 +36,7 @@ class OrderService {
 
   final ApiService _api = ApiService();
   final PrinterService _printer = PrinterService();
-  final HtmlPrintService _htmlPrint = HtmlPrintService(); // 28 Haz 2026
+  // 29 Haz 2026: özet fişi artık ESC/POS IP:9100 (HtmlPrintService kaldırıldı, OS yazıcı eşleştirme derdi yok)
   final LogService _log = LogService();
   final WebSocketService _ws = WebSocketService();
   final SoundService _sound = SoundService();
@@ -411,40 +410,58 @@ class OrderService {
   // Yazıcı = panel "Özet Fiş Yazıcısı" (online_order_summary_printer_id) ↔ lokal
   // eşleştirilmiş OS yazıcı adı. İZOLE: mutfak ESC/POS akışına dokunmaz.
   // ==========================================================================
+  // 29 Haz 2026 — ÖZET/MÜŞTERİ FİŞİ: artık IP:9100 ESC/POS (mutfak gibi ham TCP).
+  // Eskiden HTML→OS yazıcı sürücüsüydü ama özet yazıcısı AĞ termali (IP:9100) ve OS
+  // eşleştirmesi gerekiyordu → otomatik basamıyordu. Çözüm: özet yazıcısının IP'sine
+  // doğrudan ESC/POS özet fişi (KASA departmanı: ürünler + toplam + ödeme). Eşleştirme YOK.
   Future<void> _printCustomerSummaryHtml(int orderId, String orderNumber) async {
     try {
       final cfg = await _api.getOnlineReceiptConfig();
       // Özet fişi kapalıysa hiç basma (panel ayarı)
       if (cfg == null || cfg['print_summary'] != true) return;
 
-      final summaryPrinterId = _intOrNull(cfg['summary_printer_id']);
-      if (summaryPrinterId == null) {
+      final sp = cfg['summary_printer'];
+      if (sp is! Map) {
         _log.warning(LogType.action,
-          'Özet fişi açık ama "Özet Fiş Yazıcısı" seçili değil (panel #pos-printers) — atlandi',
+          'Özet fişi açık ama "Özet Fiş Yazıcısı" seçili/aktif değil (panel #pos-printers) — atlandi',
           details: {'order_id': orderId});
         return;
       }
-
-      // panel printer_id → lokal eşleştirilmiş OS yazıcı adı
-      final osPrinterName = _storage.getOsPrinterName(summaryPrinterId);
-
-      // Online HTML fişini backend'den al (TEK KAYNAK)
-      final html = await _api.getReceiptHtml(orderId);
-      if (html == null || html.isEmpty) {
-        _log.warning(LogType.action, 'Özet HTML fişi alinamadi: $orderNumber', details: {'order_id': orderId});
+      final ip = (sp['ip_address'] ?? sp['ip'] ?? '').toString();
+      final port = _intOrNull(sp['port']) ?? 9100;
+      final printerName = sp['name']?.toString() ?? 'Özet Yazıcı';
+      if (ip.isEmpty) {
+        _log.warning(LogType.action, 'Özet yazıcı IP yok: $printerName', details: {'order_id': orderId});
         return;
       }
 
-      final ok = await _htmlPrint.printHtmlToOsPrinter(html, osPrinterName);
+      // Sipariş detayını çek (ürün/tutar/ödeme dolu) → KASA özet ESC/POS üret.
+      final order = await _api.getOrder(orderId);
+      if (order == null) {
+        _log.warning(LogType.action, 'Özet fişi: sipariş detayı alinamadi', details: {'order_id': orderId});
+        return;
+      }
+      final bytes = await _printer.generateOrderReceiptBytes(order, 'KASA');
+      final ok = await _printer.sendRawToIp(ip, port, bytes);
       if (ok) {
-        _log.logAction('Müşteri özet fişi basildi: $orderNumber → '
-          '${osPrinterName ?? "yazdır penceresi"}');
+        _log.logAction('Müşteri özet fişi basildi: $orderNumber → $printerName ($ip)');
       } else {
-        _log.warning(LogType.error, 'Müşteri özet fişi BASILAMADI: $orderNumber',
-          details: {'order_id': orderId, 'os_printer': osPrinterName});
+        // Başarısız → lokal kuyruğa (PrintQueueService 5sn retry)
+        await _db.addJob(
+          printType: 'order',
+          orderId: orderId,
+          orderNumber: orderNumber,
+          printerId: _intOrNull(sp['id']),
+          printerName: printerName,
+          printerIp: ip,
+          printerPort: port,
+          receiptData: { 'order': order, 'department': 'KASA' },
+        );
+        _log.warning(LogType.error, 'Özet fişi BASILAMADI, kuyruğa eklendi: $orderNumber → $printerName ($ip)',
+          details: {'order_id': orderId});
       }
     } catch (e) {
-      _log.error(LogType.error, 'Özet HTML fişi hatasi: $e', details: {'order_id': orderId});
+      _log.error(LogType.error, 'Özet fişi hatasi: $e', details: {'order_id': orderId});
     }
   }
 

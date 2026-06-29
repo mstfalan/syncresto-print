@@ -220,7 +220,7 @@ class PrinterService {
     // Kanal etiketi (web/getir/trendyol vb.)
     final source = order['source']?.toString() ?? '';
     if (source.isNotEmpty) {
-      bytes += generator.text('Kaynak: ${_sourceLabel(source)}',
+      bytes += generator.text(_turkishToAscii('Kaynak: ${_sourceLabel(source)}'),
         styles: const PosStyles(bold: true));
     }
     bytes += generator.hr();
@@ -367,12 +367,14 @@ class PrinterService {
         ),
       ]);
 
-      // Ödeme yöntemi
+      // Ödeme yöntemi — 29 Haz 2026: pazaryeri HAM Türkçe etiketi ("Online Kredi/Banka Kartı")
+      // _paymentMethodLabel default'unda aynen dönüyordu; ı/Ö karakteri ESC/POS'u patlatıyordu
+      // ("Invalid argument: Contains invalid characters"). _turkishToAscii ZORUNLU.
       final paymentMethod = order['payment_method'];
       if (paymentMethod != null && paymentMethod.toString().isNotEmpty) {
         bytes += generator.hr();
         bytes += generator.text(
-          'Odeme: ${_paymentMethodLabel(paymentMethod.toString())}',
+          _turkishToAscii('Odeme: ${_paymentMethodLabel(paymentMethod.toString())}'),
           styles: const PosStyles(align: PosAlign.center, bold: true),
         );
       }
@@ -399,15 +401,34 @@ class PrinterService {
   // HELPERS — POS ile birebir
   // ===========================================================================
 
+  // 29 Haz 2026 — ESC/POS yalnızca ASCII/CP437 basabilir. Türkçe + tüm non-ASCII
+  // karakterler "Invalid argument: Contains invalid characters" hatası veriyordu
+  // (örn pazaryeri ham etiketi "Online Kredi/Banka Kartı"). GÜVENLİ HALE GETİR:
+  // bilinen Türkçe → ASCII karşılığı, kalan tüm ASCII-dışı karakteri sadeleştir/at.
   String _turkishToAscii(String text) {
+    if (text.isEmpty) return text;
     const turkishChars = 'ÇçĞğİıÖöŞşÜü';
-    const asciiChars = 'CcGgIiOoSsUu';
-
+    const asciiChars   = 'CcGgIiOoSsUu';
     String result = text;
     for (int i = 0; i < turkishChars.length; i++) {
       result = result.replaceAll(turkishChars[i], asciiChars[i]);
     }
-    return result;
+    // Yaygın non-ASCII semboller → ASCII eşdeğeri
+    result = result
+        .replaceAll('₺', 'TL')
+        .replaceAll('’', "'").replaceAll('‘', "'")
+        .replaceAll('“', '"').replaceAll('”', '"')
+        .replaceAll('—', '-').replaceAll('–', '-')
+        .replaceAll('…', '...')
+        .replaceAll(' ', ' '); // non-breaking space
+    // Kalan TÜM ASCII-dışı (kod > 126) karakterleri at — yazıcı patlamasın (garanti).
+    final sb = StringBuffer();
+    for (final cu in result.codeUnits) {
+      if (cu >= 32 && cu <= 126) sb.writeCharCode(cu);
+      else if (cu == 10 || cu == 13) sb.writeCharCode(cu); // satır sonu koru
+      // diğer her şey (kalan Türkçe/emoji/kontrol) → atla
+    }
+    return sb.toString();
   }
 
   String _formatDate(String? isoDate) {
