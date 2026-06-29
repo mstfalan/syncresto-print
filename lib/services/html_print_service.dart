@@ -128,6 +128,19 @@ class HtmlPrintService {
     }
   }
 
+  /// ÖNİZLEME (yazıcıya göndermez): static HTML → QR çöz → htmltopdfwidgets PDF bytes.
+  /// Ekranda Printing.layoutPdf ile gösterilir. Gerçek basımla AYNI render motoru
+  /// (htmltopdfwidgets), yani önizlemede görünen = yazıcıdan çıkacak tasarım.
+  Future<Uint8List?> buildPdfFromHtml(String html) async {
+    try {
+      final resolvedHtml = _resolveQrPlaceholders(html);
+      return await _htmlToPdf(resolvedHtml);
+    } catch (e) {
+      _log.error(LogType.error, 'Önizleme PDF üretilemedi: $e');
+      return null;
+    }
+  }
+
   /// Online HTML özet fişini AĞ TERMALİNE (IP:9100) ESC/POS raster olarak bas.
   /// HTML → PDF → raster görsel → Generator.imageRaster → bytes. sendBytes ile gönderilir.
   /// Döner: ESC/POS byte listesi (null = üretilemedi, caller fallback/kuyruk).

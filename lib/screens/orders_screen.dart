@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:printing/printing.dart';
 
 import '../services/api_service.dart';
 import '../services/order_service.dart';
@@ -9,6 +10,7 @@ import '../services/storage_service.dart';
 import '../services/websocket_service.dart';
 import '../services/print_queue_service.dart';
 import '../services/update_service.dart';
+import '../services/html_print_service.dart';
 import '../widgets/print_retry_modal.dart';
 import 'printer_settings_screen.dart';
 import 'setup_screen.dart';
@@ -31,6 +33,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
 
   final PrintQueueService _printQueue = PrintQueueService();
   final UpdateService _updateService = UpdateService();
+  final HtmlPrintService _htmlPrint = HtmlPrintService();
 
   List<Map<String, dynamic>> _orders = [];
   bool _loading = true;
@@ -490,6 +493,40 @@ class _OrdersScreenState extends State<OrdersScreen> {
     // 18 May 2026: Yenile cagrisi YOK — sadece o sipariş icin tekrar yazdirildi, liste degismez
   }
 
+  /// 29 Haz 2026 — FİŞ ÖNİZLEME (yazıcıya GÖNDERMEZ). Müşteri/özet fişinin online HTML
+  /// tasarımını backend static HTML + htmltopdfwidgets ile PDF'e çevirip ekranda gösterir.
+  /// Gerçek basımla AYNI render motoru → önizlemede ne görünürse yazıcıdan o çıkar.
+  Future<void> _previewReceipt(Map<String, dynamic> order) async {
+    final orderId = order['id'] is int ? order['id'] as int : int.tryParse('${order['id']}');
+    if (orderId == null) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('Önizleme hazırlanıyor...'), duration: Duration(seconds: 1)));
+
+    try {
+      final html = await _api.getReceiptHtml(orderId, static: true);
+      if (html == null || html.isEmpty) {
+        if (!mounted) return;
+        messenger.showSnackBar(const SnackBar(content: Text('Fiş HTML alınamadı'), backgroundColor: Color(0xFFDC2626)));
+        return;
+      }
+      final pdf = await _htmlPrint.buildPdfFromHtml(html);
+      if (pdf == null || pdf.isEmpty) {
+        if (!mounted) return;
+        messenger.showSnackBar(const SnackBar(content: Text('Önizleme PDF üretilemedi'), backgroundColor: Color(0xFFDC2626)));
+        return;
+      }
+      // Sistem PDF önizleme/yazdırma diyaloğu (yazıcı seçmezsen sadece görürsün).
+      await Printing.layoutPdf(
+        onLayout: (_) async => pdf,
+        name: 'Fis ${order['order_number'] ?? orderId}',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('Önizleme hatası: $e'), backgroundColor: const Color(0xFFDC2626)));
+    }
+  }
+
   Future<void> _toggleAutoPrint() async {
     setState(() => _autoPrint = !_autoPrint);
     await _orderService.setAutoPrint(_autoPrint);
@@ -644,6 +681,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
                 itemBuilder: (_, idx) => _OrderCard(
                   order: _orders[idx],
                   onReprint: () => _reprintOrder(_orders[idx]),
+                  onPreview: () => _previewReceipt(_orders[idx]),
                 ),
               ),
             ),
@@ -654,7 +692,8 @@ class _OrdersScreenState extends State<OrdersScreen> {
 class _OrderCard extends StatelessWidget {
   final Map<String, dynamic> order;
   final VoidCallback onReprint;
-  const _OrderCard({required this.order, required this.onReprint});
+  final VoidCallback onPreview;
+  const _OrderCard({required this.order, required this.onReprint, required this.onPreview});
 
   @override
   Widget build(BuildContext context) {
@@ -709,20 +748,33 @@ class _OrderCard extends StatelessWidget {
               ],
             ]),
           ),
-          // Sağ: tutar + yazdır butonu
+          // Sağ: tutar + önizle/yazdır butonları
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text('${total.toStringAsFixed(2)} ₺',
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
-            TextButton.icon(
-              onPressed: onReprint,
-              icon: const Icon(Icons.print, size: 16),
-              label: const Text('Yazdır', style: TextStyle(fontSize: 13)),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
-                minimumSize: const Size(0, 28),
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              TextButton.icon(
+                onPressed: onPreview,
+                icon: const Icon(Icons.visibility, size: 16),
+                label: const Text('Önizle', style: TextStyle(fontSize: 13)),
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF6B7280),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                  minimumSize: const Size(0, 28),
+                ),
               ),
-            ),
+              const SizedBox(width: 4),
+              TextButton.icon(
+                onPressed: onReprint,
+                icon: const Icon(Icons.print, size: 16),
+                label: const Text('Yazdır', style: TextStyle(fontSize: 13)),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                  minimumSize: const Size(0, 28),
+                ),
+              ),
+            ]),
           ]),
         ]),
       ),
