@@ -1,25 +1,23 @@
 // =============================================================================
-// SyncResto Print — MÜŞTERİ/ÖZET FİŞİ HTML basım servisi (28 Haz 2026)
+// SyncResto Print — MÜŞTERİ/ÖZET FİŞİ: online HTML → görsel → ESC/POS raster → IP:9100
+// 29 Haz 2026 (Mustafa: "özet fiş sitede nasılsa BİREBİR olacak").
 //
-// Mustafa kuralı:
-//   - Müşteri/özet fişi = onlinedeki HTML tasarımı BİREBİR (admin.js generateReceiptHTML
-//     + admin.css). Backend /orders/:id/receipt-html standalone HTML döndürür (TEK KAYNAK
-//     — sitede fiş değişince burası da değişir, Flutter build GEREKMEZ).
-//   - Yazdırma "Chrome'da Yazdır → termal seç" gibi: HTML → PDF → OS yazıcı sürücüsü.
-//     Termaller Windows'ta KURULU (Chrome'da görünüyor). Ham TCP IP:9100 DEĞİL.
+// Özet/müşteri fişi = onlinedeki ÖZEL HTML tasarımı (admin.js generateReceiptHTML +
+// admin.css + QR). Backend /orders/:id/receipt-html standalone HTML döndürür (TEK
+// KAYNAK — sitede değişince burası da değişir, build YOK).
 //
-// `printing` paketi: HtmlToPdf ile HTML'i PDF'e çevirir, sonra OS yazıcısına basar.
-//   - Sessiz basım (yazıcı adı biliniyorsa): Printing.directPrintPdf(printer, ...)
-//   - Yazıcı seçilmemişse: Printing.layoutPdf (Chrome gibi yazdır penceresi açılır,
-//     kullanıcı termali seçer — Mustafa'nın tarif ettiği akış).
+// AĞ TERMALİNE (IP:9100) basım: OS yazıcı sürücüsü/eşleştirme YOK. HTML → PDF
+// (printing/Chromium) → raster görsel (printing.raster) → ESC/POS raster komutu
+// (Generator.imageRaster) → ham TCP IP:9100 (mutfak fişiyle aynı yol).
 //
-// İZOLASYON: Bu servis SADECE müşteri/özet HTML fişi içindir. Mutfak ürün fişi
-// (ESC/POS, printer_service.dart) HİÇ DOKUNULMAZ. Flutter POS AYRI repo.
+// İZOLE: mutfak ürün fişi (printer_service.dart ESC/POS, _generateOrderReceipt) AYRI.
 // =============================================================================
 
 import 'dart:typed_data';
 import 'package:printing/printing.dart';
 import 'package:pdf/pdf.dart';
+import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
+import 'package:image/image.dart' as img;
 import 'log_service.dart';
 
 class HtmlPrintService {
@@ -29,8 +27,7 @@ class HtmlPrintService {
 
   final LogService _log = LogService();
 
-  /// OS'ta kurulu yazıcıları listele (ayar ekranında eşleştirme için).
-  /// Dönen: Printer (name, url, isDefault...). Termaller burada görünür.
+  /// OS'ta kurulu yazıcıları listele (ayar ekranı için — opsiyonel, artık zorunlu değil).
   Future<List<Printer>> listOsPrinters() async {
     try {
       return await Printing.listPrinters();
@@ -40,11 +37,9 @@ class HtmlPrintService {
     }
   }
 
-  /// HTML'i PDF'e çevir (Chrome headless / printing motoru).
-  /// 80mm termal = ~226pt genişlik. Fiş CSS @page ile yüksekliği otomatik.
+  /// HTML → 80mm PDF (Chromium/printing). Yükseklik içeriğe göre uzar.
   Future<Uint8List?> _htmlToPdf(String html) async {
     try {
-      // 80mm rulo: genişlik sabit, yükseklik içeriğe göre uzar.
       return await Printing.convertHtml(
         format: const PdfPageFormat(
           80 * PdfPageFormat.mm,
@@ -59,52 +54,58 @@ class HtmlPrintService {
     }
   }
 
-  /// Belirli bir OS yazıcısına SESSİZ bas (yazıcı adı/url biliniyorsa).
-  /// osPrinterName = panel "Özet Fiş Yazıcısı" → eşleştirilmiş Windows yazıcı adı.
-  /// Döner: true = basıldı. Yazıcı bulunamaz/hata → false (caller fallback eder).
-  Future<bool> printHtmlToOsPrinter(String html, String? osPrinterName) async {
-    final pdf = await _htmlToPdf(html);
-    if (pdf == null) return false;
-
+  /// Online HTML özet fişini AĞ TERMALİNE (IP:9100) ESC/POS raster olarak bas.
+  /// HTML → PDF → raster görsel → Generator.imageRaster → bytes. sendBytes ile gönderilir.
+  /// Döner: ESC/POS byte listesi (null = üretilemedi, caller fallback/kuyruk).
+  Future<List<int>?> buildEscposFromHtml(String html, {int dpi = 203}) async {
     try {
-      // Yazıcı adı verilmişse onu bul, sessiz bas.
-      if (osPrinterName != null && osPrinterName.isNotEmpty) {
-        final printers = await listOsPrinters();
-        Printer? target;
-        for (final p in printers) {
-          if (p.name == osPrinterName || p.url == osPrinterName) { target = p; break; }
-        }
-        if (target != null) {
-          final ok = await Printing.directPrintPdf(
-            printer: target,
-            onLayout: (_) async => pdf,
-            name: 'SyncResto-Ozet-Fis',
-          );
-          if (ok) {
-            _log.logAction('Özet fiş HTML basildi (sessiz): $osPrinterName');
-            return true;
-          }
-          _log.warning(LogType.action, 'directPrintPdf false dondu: $osPrinterName');
-        } else {
-          _log.warning(LogType.action,
-            'Eşleştirilen OS yazıcısı bulunamadi: "$osPrinterName" — yazdır penceresi açılacak');
-        }
+      final pdf = await _htmlToPdf(html);
+      if (pdf == null) return null;
+
+      // PDF → raster görsel(ler). 80mm @203dpi ≈ 576px genişlik (termal tam en).
+      // raster() sayfa sayfa image verir; özet fiş tek sayfa beklenir (uzunsa birleştir).
+      final List<img.Image> pages = [];
+      await for (final page in Printing.raster(pdf, dpi: dpi.toDouble())) {
+        final png = await page.toPng();
+        final decoded = img.decodePng(png);
+        if (decoded != null) pages.add(decoded);
       }
-      // Yazıcı yok/bulunamadı → Chrome gibi yazdır penceresi (kullanıcı termali seçer).
-      // Mustafa: "yazdır dediğimizde Chrome'un yazdırma penceresi çıkıyor, orda termali seçip bastırıyoruz".
-      final ok = await Printing.layoutPdf(
-        onLayout: (_) async => pdf,
-        name: 'SyncResto-Ozet-Fis',
-        usePrinterSettings: true,
-      );
-      if (ok) _log.logAction('Özet fiş HTML basildi (yazdır penceresi)');
-      return ok;
+      if (pages.isEmpty) return null;
+
+      // Sayfaları dikey birleştir (tek görsel) — termal genişliğine (576px) ölçekle.
+      final merged = _mergeVertical(pages);
+      const targetWidth = 576; // 80mm @203dpi
+      final resized = merged.width > targetWidth
+          ? img.copyResize(merged, width: targetWidth)
+          : merged;
+      // Termal için 1-bit benzeri: gri tonlama (imageRaster zaten dither/threshold uygular)
+      final gray = img.grayscale(resized);
+
+      final profile = await CapabilityProfile.load();
+      final generator = Generator(PaperSize.mm80, profile);
+      List<int> bytes = [];
+      bytes += generator.imageRaster(gray, align: PosAlign.center);
+      bytes += generator.feed(2);
+      bytes += generator.cut();
+      return bytes;
     } catch (e) {
-      _log.error(LogType.error, 'Özet fiş HTML basım hatasi: $e');
-      return false;
+      _log.error(LogType.error, 'HTML→ESC/POS raster hatasi: $e');
+      return null;
     }
   }
 
-  /// Önizleme (yazdırmadan PDF byte üret) — ayar ekranı "Önizle" için.
-  Future<Uint8List?> previewPdf(String html) => _htmlToPdf(html);
+  // Birden çok sayfa görselini dikey birleştir (aynı genişliğe getirip alt alta).
+  img.Image _mergeVertical(List<img.Image> pages) {
+    if (pages.length == 1) return pages.first;
+    final w = pages.map((p) => p.width).reduce((a, b) => a > b ? a : b);
+    final totalH = pages.fold<int>(0, (s, p) => s + p.height);
+    final out = img.Image(width: w, height: totalH);
+    img.fill(out, color: img.ColorRgb8(255, 255, 255));
+    int y = 0;
+    for (final p in pages) {
+      img.compositeImage(out, p, dstX: 0, dstY: y);
+      y += p.height;
+    }
+    return out;
+  }
 }

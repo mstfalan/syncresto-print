@@ -100,6 +100,11 @@ class PrintQueueService {
         bytes = await _printer.generateOrderReceiptBytes(order, department);
       } else if (printType == 'cancel') {
         bytes = await _printer.generateCancelReceiptBytes(data);
+      } else if (printType == 'raw') {
+        // 29 Haz 2026 — hazır ESC/POS byte (özet fişi HTML→raster). receiptData.raw_base64.
+        final b64 = data['raw_base64']?.toString() ?? '';
+        if (b64.isEmpty) { await _db.markCompleted(id); return true; }
+        bytes = base64Decode(b64);
       } else {
         // 'test' veya bilinmeyen — atla
         await _db.markCompleted(id);

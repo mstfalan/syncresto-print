@@ -1,7 +1,7 @@
 name: syncresto_print
 description: "SyncResto Print — Online sipariş yazıcı uygulaması (Marketplace + Web siparişleri otomatik fişe basar)"
 publish_to: 'none'
-version: 1.2.1+5
+version: 1.2.2+6
 
 environment:
   sdk: ^3.11.0
@@ -23,6 +23,9 @@ dependencies:
   # OS yazıcı sürücüsüyle termale raster). HTML→PDF→belirli yazıcıya sessiz basım.
   printing: ^5.13.3
   pdf: ^3.11.1                       # printing icin PdfPageFormat (HTML→PDF sayfa boyutu)
+  # 29 Haz 2026 — ÖZET FİŞİ online HTML → image → ESC/POS RASTER → IP:9100 (ağ termali, OS
+  # sürücü/eşleştirme YOK). printing.raster PDF→image, image paketi decode, Generator.imageRaster.
+  image: ^4.3.0
   # 28 Haz 2026 — TAM OTONOM GUNCELLEME (zip indir + eski dosyalari sil + kur + yeniden ac)
   archive: ^3.6.1                    # indirilen .zip arsivini cikar (saf Dart, native bagimsiz)
   # Log servisi için (LogService dependency'leri)

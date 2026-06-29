@@ -23,6 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_service.dart';
 import 'printer_service.dart';
+import 'html_print_service.dart'; // 29 Haz: özet fişi online HTML → ESC/POS raster
 import 'log_service.dart';
 import 'websocket_service.dart';
 import 'sound_service.dart';
@@ -36,7 +37,8 @@ class OrderService {
 
   final ApiService _api = ApiService();
   final PrinterService _printer = PrinterService();
-  // 29 Haz 2026: özet fişi artık ESC/POS IP:9100 (HtmlPrintService kaldırıldı, OS yazıcı eşleştirme derdi yok)
+  // 29 Haz 2026: özet fişi = online HTML → ESC/POS raster → IP:9100 (HtmlPrintService.buildEscposFromHtml)
+  final HtmlPrintService _htmlPrint = HtmlPrintService();
   final LogService _log = LogService();
   final WebSocketService _ws = WebSocketService();
   final SoundService _sound = SoundService();
@@ -247,10 +249,13 @@ class OrderService {
       try {
         // 27 Haz 2026: SERVER-SIDE ESC/POS (bayrak aciksa). Sunucudan hazir byte cek;
         // null/hata -> mevcut Flutter render'a FALLBACK (davranis birebir korunur).
+        // 29 Haz 2026 — MUTFAK fişi: ürün-bazlı yazıcı → 'MUTFAK' departmanı (Flutter POS BİREBİR:
+        // sadece ürün+ekstra+çıkarılan+not, fiyat/toplam/ödeme YOK). Eskiden 'KASA' idi → mutfak
+        // fişinde de toplam çıkıyordu (yanlış). Özet/müşteri fişi AYRI (online HTML, aşağıda).
         List<int>? bytes;
         if (_storage.getServerSideReceipt()) {
           try {
-            final esc = await _api.getOrderEscpos(orderId, printerId: printerId, paperWidth: 80, department: 'KASA');
+            final esc = await _api.getOrderEscpos(orderId, printerId: printerId, paperWidth: 80, department: 'MUTFAK');
             final groups = (esc?['groups'] as List?) ?? [];
             // Bu yaziciya ait grubu bul (printer_id ile); yoksa tek grup varsa onu al.
             Map<String, dynamic>? mg;
@@ -267,8 +272,8 @@ class OrderService {
             _log.warning(LogType.action, 'Server-side ESC/POS alinamadi, eski render fallback: $e');
           }
         }
-        // Fallback / bayrak kapali: mevcut Flutter render (DEGISMEDI)
-        bytes ??= await _printer.generateOrderReceiptBytes(partialTicket, 'KASA');
+        // Fallback / bayrak kapali: Flutter render — MUTFAK departmanı (sade)
+        bytes ??= await _printer.generateOrderReceiptBytes(partialTicket, 'MUTFAK');
         final ok = await _printer.sendRawToIp(ip, port, bytes);
         if (ok) {
           successCount++;
@@ -285,7 +290,7 @@ class OrderService {
             printerPort: port,
             receiptData: {
               'order': partialTicket,
-              'department': 'KASA',
+              'department': 'MUTFAK',
             },
           );
           failedGroups.add({
@@ -308,7 +313,7 @@ class OrderService {
           printerPort: port,
           receiptData: {
             'order': partialTicket,
-            'department': 'KASA',
+            'department': 'MUTFAK',
           },
         );
         failedGroups.add({
@@ -435,27 +440,33 @@ class OrderService {
         return;
       }
 
-      // Sipariş detayını çek (ürün/tutar/ödeme dolu) → KASA özet ESC/POS üret.
-      final order = await _api.getOrder(orderId);
-      if (order == null) {
-        _log.warning(LogType.action, 'Özet fişi: sipariş detayı alinamadi', details: {'order_id': orderId});
+      // 29 Haz 2026 — ÖZET FİŞİ = SİTEDEKİ ÖZEL HTML (BİREBİR). Backend /orders/:id/receipt-html
+      // (admin.js generateReceiptHTML + admin.css + QR, TEK KAYNAK). HTML → görsel → ESC/POS raster
+      // → AĞ termaline IP:9100 (OS yazıcı eşleştirme YOK). Mutfak fişinden TAMAMEN farklı tasarım.
+      final html = await _api.getReceiptHtml(orderId);
+      if (html == null || html.isEmpty) {
+        _log.warning(LogType.action, 'Özet HTML fişi alinamadi: $orderNumber', details: {'order_id': orderId});
         return;
       }
-      final bytes = await _printer.generateOrderReceiptBytes(order, 'KASA');
+      final bytes = await _htmlPrint.buildEscposFromHtml(html);
+      if (bytes == null || bytes.isEmpty) {
+        _log.warning(LogType.error, 'Özet HTML→ESC/POS raster üretilemedi: $orderNumber', details: {'order_id': orderId});
+        return;
+      }
       final ok = await _printer.sendRawToIp(ip, port, bytes);
       if (ok) {
-        _log.logAction('Müşteri özet fişi basildi: $orderNumber → $printerName ($ip)');
+        _log.logAction('Müşteri özet fişi (online HTML) basildi: $orderNumber → $printerName ($ip)');
       } else {
-        // Başarısız → lokal kuyruğa (PrintQueueService 5sn retry)
+        // Başarısız → lokal kuyruğa (raw ESC/POS byte ile retry)
         await _db.addJob(
-          printType: 'order',
+          printType: 'raw',
           orderId: orderId,
           orderNumber: orderNumber,
           printerId: _intOrNull(sp['id']),
           printerName: printerName,
           printerIp: ip,
           printerPort: port,
-          receiptData: { 'order': order, 'department': 'KASA' },
+          receiptData: { 'raw_base64': base64Encode(bytes) },
         );
         _log.warning(LogType.error, 'Özet fişi BASILAMADI, kuyruğa eklendi: $orderNumber → $printerName ($ip)',
           details: {'order_id': orderId});
