@@ -79,14 +79,42 @@ class OrderService {
     _autoPrint = prefs.getBool('auto_print') ?? true;
   }
 
+  // 29 Haz 2026: İlk bağlantı mı? Program AÇILIRKEN geçmiş (basılmamış) siparişler
+  // çekilip işlenmesin (Mustafa: "açılışta geçmişi boşver, sonra gelenler yazılsın").
+  // Sadece program açıldıktan SONRA socket kopup yeniden bağlanırsa telafi yapılır.
+  bool _firstConnect = true;
+
   void start() {
     _ws.onNewOrder = (orderData) async {
       await _handleIncomingOrder(orderData);
     };
-    // 28 Haz 2026: socket bağlanınca (ilk + reconnect) kaçan siparişleri telafi et.
+    // 28 Haz 2026: socket bağlanınca kaçan siparişleri telafi et.
+    // 29 Haz 2026: İLK bağlantıda (program açılışı) telafi YAPMA — geçmiş atlanır.
+    // Açılışta var olan tüm açık siparişler _processedOrderIds'e eklenir (bir daha basılmaz).
     _ws.onReconnected = () async {
-      await printMissedOrders();
+      if (_firstConnect) {
+        _firstConnect = false;
+        await _seedProcessedFromHistory();   // geçmişi "işlendi" say, basma
+        return;
+      }
+      await printMissedOrders();             // gerçek reconnect → kaçanları telafi et
     };
+  }
+
+  /// 29 Haz 2026: Program açılışında var olan basılmamış siparişleri "işlendi" olarak
+  /// işaretle (basMA). Böylece açılış-anı geçmişi atlanır; bundan SONRA gelen yeni
+  /// siparişler normal işlenir. Reconnect telafisi de bunları tekrar çekmez.
+  Future<void> _seedProcessedFromHistory() async {
+    try {
+      final existing = await _api.getUnprintedOrders(windowMin: 240);
+      for (final o in existing) {
+        final id = _intOrNull(o['id']);
+        if (id != null) _processedOrderIds.add(id);
+      }
+      _log.logAction('Açılış: ${existing.length} geçmiş sipariş atlandı (sadece bundan sonrakiler basılır)');
+    } catch (e) {
+      _log.warning(LogType.action, 'Açılış geçmiş atlama hatasi: $e');
+    }
   }
 
   /// Yeni sipariş geldi
@@ -443,9 +471,9 @@ class OrderService {
       // 29 Haz 2026 — ÖZET FİŞİ = SİTEDEKİ ÖZEL HTML (BİREBİR). Backend /orders/:id/receipt-html
       // (admin.js generateReceiptHTML + admin.css + QR, TEK KAYNAK). HTML → görsel → ESC/POS raster
       // → AĞ termaline IP:9100 (OS yazıcı eşleştirme YOK). Mutfak fişinden TAMAMEN farklı tasarım.
-      // static=1 → JS'siz, sade-inline-CSS, table-layout STATİK HTML (htmltopdfwidgets uyumlu,
-      // Chromium'suz Windows masaüstü). QR yeri [[QR:url]] placeholder; html_print_service çözer.
-      final html = await _api.getReceiptHtml(orderId, static: true);
+      // JS'li TAM HTML (static KALDIRILDI): gerçek Chromium/WebView2 sayfanın JS'ini çalıştırır,
+      // QR'ı kendi üretir. noprint=1 → otomatik window.print tetiklenmesin (PDF'i biz CDP ile alırız).
+      final html = await _api.getReceiptHtml(orderId, noprint: true);
       if (html == null || html.isEmpty) {
         _log.warning(LogType.action, 'Özet HTML fişi alinamadi: $orderNumber', details: {'order_id': orderId});
         return;

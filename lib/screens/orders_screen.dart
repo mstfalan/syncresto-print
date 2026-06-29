@@ -493,9 +493,9 @@ class _OrdersScreenState extends State<OrdersScreen> {
     // 18 May 2026: Yenile cagrisi YOK — sadece o sipariş icin tekrar yazdirildi, liste degismez
   }
 
-  /// 29 Haz 2026 — FİŞ ÖNİZLEME (yazıcıya GÖNDERMEZ). Müşteri/özet fişinin online HTML
-  /// tasarımını backend static HTML + htmltopdfwidgets ile PDF'e çevirip ekranda gösterir.
-  /// Gerçek basımla AYNI render motoru → önizlemede ne görünürse yazıcıdan o çıkar.
+  /// 29 Haz 2026 — FİŞ ÖNİZLEME (yazıcıya GÖNDERMEZ). Müşteri/özet fişinin online TAM HTML
+  /// tasarımını gerçek Chromium/WebView2 (CDP Page.printToPDF) ile PDF'e çevirip ekranda gösterir.
+  /// Gerçek basımla AYNI render motoru → önizlemede ne görünürse yazıcıdan o çıkar. macOS: PDF null.
   Future<void> _previewReceipt(Map<String, dynamic> order) async {
     final orderId = order['id'] is int ? order['id'] as int : int.tryParse('${order['id']}');
     if (orderId == null) return;
@@ -504,7 +504,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
     messenger.showSnackBar(const SnackBar(content: Text('Önizleme hazırlanıyor...'), duration: Duration(seconds: 1)));
 
     try {
-      final html = await _api.getReceiptHtml(orderId, static: true);
+      final html = await _api.getReceiptHtml(orderId, noprint: true);
       if (html == null || html.isEmpty) {
         if (!mounted) return;
         messenger.showSnackBar(const SnackBar(content: Text('Fiş HTML alınamadı'), backgroundColor: Color(0xFFDC2626)));
@@ -516,11 +516,25 @@ class _OrdersScreenState extends State<OrdersScreen> {
         messenger.showSnackBar(const SnackBar(content: Text('Önizleme PDF üretilemedi'), backgroundColor: Color(0xFFDC2626)));
         return;
       }
-      // Sistem PDF önizleme/yazdırma diyaloğu (yazıcı seçmezsen sadece görürsün).
-      await Printing.layoutPdf(
-        onLayout: (_) async => pdf,
-        name: 'Fis ${order['order_number'] ?? orderId}',
-      );
+      if (!mounted) return;
+      // 29 Haz 2026: layoutPdf (sistem yazdırma diyaloğu) macOS sandbox'ta "does not support
+      // printing" veriyor (print entitlement yok). UYGULAMA İÇİ PdfPreview ekranı ile göster —
+      // entitlement gerektirmez, hem macOS hem Windows'ta çalışır, yazıcıya GÖNDERMEZ.
+      final no = order['order_number']?.toString() ?? '$orderId';
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: Text('Fiş Önizleme — $no')),
+          body: PdfPreview(
+            build: (_) async => pdf,
+            canChangePageFormat: false,
+            canChangeOrientation: false,
+            canDebug: false,
+            allowPrinting: false,   // macOS print entitlement yok → yazdır butonu gizli
+            allowSharing: true,
+            pdfFileName: 'Fis_$no.pdf',
+          ),
+        ),
+      ));
     } catch (e) {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text('Önizleme hatası: $e'), backgroundColor: const Color(0xFFDC2626)));
