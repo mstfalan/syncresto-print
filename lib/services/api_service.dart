@@ -258,11 +258,17 @@ class ApiService {
 
   /// Siparisin ONLINE HTML fisini ham string olarak getir (standalone, CSS+JS inline).
   /// printing paketi bunu PDF'e cevirip yaziciya basar. ?noprint=1 onizleme (window.print yok).
-  Future<String?> getReceiptHtml(int orderId, {bool noprint = false}) async {
+  /// 29 Haz 2026: [static] true → backend ?static=1 ile JS'siz, sade-inline-CSS, table-layout
+  /// STATİK HTML döner (htmltopdfwidgets uyumlu, Chromium'suz). QR yeri [[QR:url]] placeholder
+  /// metni olarak gelir. Windows masaüstü özet fişi bunu kullanır (convertHtml çalışmaz).
+  Future<String?> getReceiptHtml(int orderId, {bool noprint = false, bool static = false}) async {
     try {
       final response = await _dio.get(
         '/api/print/orders/$orderId/receipt-html',
-        queryParameters: {if (noprint) 'noprint': 1},
+        queryParameters: {
+          if (noprint) 'noprint': 1,
+          if (static) 'static': 1,
+        },
         options: Options(responseType: ResponseType.plain),
       );
       if (response.statusCode == 200 && response.data is String) {

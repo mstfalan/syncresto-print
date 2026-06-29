@@ -443,7 +443,9 @@ class OrderService {
       // 29 Haz 2026 — ÖZET FİŞİ = SİTEDEKİ ÖZEL HTML (BİREBİR). Backend /orders/:id/receipt-html
       // (admin.js generateReceiptHTML + admin.css + QR, TEK KAYNAK). HTML → görsel → ESC/POS raster
       // → AĞ termaline IP:9100 (OS yazıcı eşleştirme YOK). Mutfak fişinden TAMAMEN farklı tasarım.
-      final html = await _api.getReceiptHtml(orderId);
+      // static=1 → JS'siz, sade-inline-CSS, table-layout STATİK HTML (htmltopdfwidgets uyumlu,
+      // Chromium'suz Windows masaüstü). QR yeri [[QR:url]] placeholder; html_print_service çözer.
+      final html = await _api.getReceiptHtml(orderId, static: true);
       if (html == null || html.isEmpty) {
         _log.warning(LogType.action, 'Özet HTML fişi alinamadi: $orderNumber', details: {'order_id': orderId});
         return;

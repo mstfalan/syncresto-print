@@ -1,7 +1,7 @@
 name: syncresto_print
 description: "SyncResto Print — Online sipariş yazıcı uygulaması (Marketplace + Web siparişleri otomatik fişe basar)"
 publish_to: 'none'
-version: 1.2.2+6
+version: 1.2.3+9
 
 environment:
   sdk: ^3.11.0
@@ -26,6 +26,13 @@ dependencies:
   # 29 Haz 2026 — ÖZET FİŞİ online HTML → image → ESC/POS RASTER → IP:9100 (ağ termali, OS
   # sürücü/eşleştirme YOK). printing.raster PDF→image, image paketi decode, Generator.imageRaster.
   image: ^4.3.0
+  # 29 Haz 2026 — STATİK HTML → PDF (saf Dart, Chromium'suz, Windows uyumlu). printing.convertHtml
+  # Windows'ta MissingPluginException veriyordu (Chromium yok). htmltopdfwidgets HTMLToPdf().convert
+  # → List<pw.Widget> üretir, pdf paketiyle MultiPage'e basılır → mevcut printing.raster yolu devam.
+  htmltopdfwidgets: ^2.1.1
+  # 29 Haz 2026 — QR kod (saf Dart). barcode.Barcode.qrCode().make() → BarcodeBar elemanları;
+  # image (v4) canvas'a çizip encodePng ile PNG byte üretiriz (barcode_image stale + image v3 çakışır).
+  barcode: ^2.2.9
   # 28 Haz 2026 — TAM OTONOM GUNCELLEME (zip indir + eski dosyalari sil + kur + yeniden ac)
   archive: ^3.6.1                    # indirilen .zip arsivini cikar (saf Dart, native bagimsiz)
   # Log servisi için (LogService dependency'leri)
