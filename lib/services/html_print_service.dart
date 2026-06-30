@@ -156,19 +156,38 @@ class HtmlPrintService {
   /// CDP printToPDF + sonuc okuma (paylasimli onLoadStop icinden cagrilir).
   Future<void> _capturePdf(InAppWebViewController controller) async {
     try {
-      // Render-bitti GARANTISI: sabit beklemeden once gercek 'load' event'ini bekle
-      // (about:blank false-positive'i + DOM/QR yarim render tuzagini eler). Sayfa
-      // zaten complete ise hemen, degilse window load'a kadar (max ~10sn) bekle.
-      await controller.evaluateJavascript(source: '''
-        (function(){ return new Promise(function(res){
-          if (document.readyState === 'complete') { res(true); return; }
-          var done=false; var fin=function(){ if(!done){done=true;res(true);} };
-          window.addEventListener('load', fin, {once:true});
-          setTimeout(fin, 10000);
-        }); })()
-      ''');
-      // QR canvas/SVG cizimi + web-font yuklemesi icin kucuk tampon (300→120ms: 'load'
-      // zaten beklendi, fontlar genelde hazir; onizleme/basim hizlanir).
+      // 30 Haz 2026 — KÖK NEDEN FIX (özet fiş BOŞ basiliyordu):
+      // ESKI yol `evaluateJavascript` ile bir async PROMISE (window 'load' bekleyen)
+      // donduruyordu. AMA flutter_inappwebview_windows 0.6.0 Windows backend'i async
+      // Promise sonucunu BEKLEMEZ/null doner → readyState beklemesi ANINDA gecer, geriye
+      // sadece sabit 120ms kalir. Paylasimli (singleton) WebView2 + loadUrl navigasyonu +
+      // uzun (60in) dev sayfa layout'u icin yetersiz → inline script `print-area`'yi
+      // doldurmadan ONCE printToPDF atesleniyor → BOS `<div id="print-area">` PDF'e basiliyor
+      // → beyaz raster → KASA'dan bos kagit cikiyor.
+      //
+      // ÇÖZÜM: 120ms sabit bekleme YERINE SENKRON-SKALER POLL. 0.6.0'da evaluateJavascript'in
+      // SENKRON skaler donduren ifadeleri CALISIR (async Promise calismaz). `print-area`
+      // gercekten dolana (innerHTML.length > 200) VE document.readyState==='complete' olana
+      // kadar 50ms araliklarla (max ~3sn) yokla. Boylece printToPDF cagrildiginda print-area
+      // KESIN DOLU. QR sunucu-base64 (__QR_MAP__) oldugu icin icerikle birlikte aninda hazir.
+      bool ready = false;
+      for (int i = 0; i < 60; i++) {
+        final r = await controller.evaluateJavascript(source:
+            'document.readyState==="complete" && '
+            '(document.getElementById("print-area")?document.getElementById("print-area").innerHTML.length:0) > 200 ? 1 : 0');
+        if (r == 1 || r == '1' || r == 1.0 || r == true) {
+          ready = true;
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      if (!ready) {
+        // Poll dolmadi (sayfa yine de basilabilir — bos olabilir). Tani icin logla; yine de
+        // dene (eski 120ms davranisindan kotu degil) ama gercek darbogaz cozuldu.
+        _log.warning(LogType.general,
+            'WebView2 print-area ~3sn icinde dolmadi (poll timeout) — yine de printToPDF deneniyor');
+      }
+      // Web-font/QR img decode icin kucuk son tampon (icerik+base64-QR zaten hazir).
       await Future<void>.delayed(const Duration(milliseconds: 120));
 
       // CDP Page.printToPDF — Chromium'un kendi PDF motoru (window.print ile aynı).
