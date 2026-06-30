@@ -208,16 +208,18 @@ class HtmlPrintService {
           'printBackground': true,
           'scale': 1.0,
           'paperWidth': 3.149, // 80mm = 3.149 inch
-          // 30 Haz 2026 — paperHeight 200in DEĞİL: 200in @203dpi ≈ 40.600px dev bitmap
-          // (eski toPng yolunda dart:ui 8192 doku sınırını ~5× aşıp özet fişi öldürüyordu).
-          // 60in hâlâ uzun pazaryeri fişlerine yeter; içerik aşarsa CDP böler, _mergeVertical
-          // birleştirir (tek görsel). Yeni RGBA decode yolu zaten boyut-güvenli; bu ek emniyet.
-          'paperHeight': 60.0,
+          // 30 Haz 2026 — paperHeight 11in (≈2230px @203dpi). KRİTİK: 60in tek sayfa →
+          // 12180px görsel → toPng() 8192 doku sınırını AŞIP içeriği BOŞ basıyordu (önizleme
+          // PDF'i vektör olduğu için doluydu; basım raster olduğu için boştu). 11in ile CDP
+          // uzun fişi ÇOK SAYFAYA böler (her sayfa <8192px → toPng sağlam), _mergeVertical
+          // tek görselde birleştirir. preferCSSPageSize=false → paperHeight KESİN uygulanır
+          // (@page:auto Chromium'da dev sayfa üretip 8192'yi aşıyordu).
+          'paperHeight': 11.0,
           'marginTop': 0.0,
           'marginBottom': 0.0,
           'marginLeft': 0.0,
           'marginRight': 0.0,
-          'preferCSSPageSize': true,
+          'preferCSSPageSize': false,
           'displayHeaderFooter': false,
           'transferMode': 'ReturnAsBase64',
         },
@@ -424,18 +426,26 @@ class HtmlPrintService {
       // raster() sayfa sayfa ham RGBA verir; özet fiş tek sayfa beklenir (uzunsa birleştir).
       final List<img.Image> pages = [];
       await for (final page in Printing.raster(pdf, dpi: dpi.toDouble())) {
-        // toPng()/decodeImageFromPixels (dart:ui 8192 doku sınırı) YERİNE ham RGBA'dan
-        // doğrudan img.Image kur — keyfi yükseklik güvenli, raster null dönmez.
-        final im = img.Image.fromBytes(
-          width: page.width,
-          height: page.height,
-          bytes: page.pixels.buffer,
-          numChannels: 4,
-          order: img.ChannelOrder.rgba,
-        );
-        pages.add(im);
+        // 30 Haz 2026: ÖNİZLEME DOĞRU ama BASIM BOŞ → fromBytes RGBA decode içeriği
+        // kaybediyordu (page.pixels formatı/hizalama). page.toPng() + decodePng DOĞRU
+        // decode eder (içerik korunur). 8192 sınırı için: @page+crop ile görsel makul
+        // boya iniyor (önizleme dolu kanıtı = PDF içerik var). toPng'a geri dön.
+        final png = await page.toPng();
+        final decoded = img.decodePng(png);
+        if (decoded != null) pages.add(decoded);
       }
-      _log.logAction('OZET-FIS _pdfToEscpos: raster sayfa=${pages.length}${pages.isNotEmpty ? " ilk=${pages.first.width}x${pages.first.height}" : ""}'); // TEŞHİS
+      // TEŞHİS: görselde gerçekten içerik var mı (koyu piksel sayısı)
+      int darkPixels = 0;
+      if (pages.isNotEmpty) {
+        final pg = pages.first;
+        for (int y = 0; y < pg.height; y += 8) {
+          for (int x = 0; x < pg.width; x += 8) {
+            final p = pg.getPixel(x, y);
+            if ((p.r + p.g + p.b) / 3 < 200) darkPixels++;
+          }
+        }
+      }
+      _log.logAction('OZET-FIS _pdfToEscpos: raster sayfa=${pages.length}${pages.isNotEmpty ? " ilk=${pages.first.width}x${pages.first.height} koyuPiksel=$darkPixels" : ""}'); // TEŞHİS
       if (pages.isEmpty) return null;
 
       // Sayfaları dikey birleştir (tek görsel) — termal genişliğine (576px) ölçekle.
