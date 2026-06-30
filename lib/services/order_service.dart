@@ -276,9 +276,15 @@ class OrderService {
       }
     }
 
+    // 30 Haz 2026 KÖK NEDEN: mutfak grubu boş (ürün yazıcısı atanmamış) olsa bile ÖZET FİŞ
+    // (KASA) basılmalı — eskiden burada 'return' ediliyordu → _printCustomerSummaryHtml (aşağıda)
+    // HİÇ çağrılmıyordu → özet fiş çıkmıyordu. Mutfak fişi ürün-yazıcı eşleşmesine bağlı, ÖZET
+    // fiş ondan BAĞIMSIZ (panel özet yazıcısına gider). Mustafa: özet fiş ayrı çıksın.
     if (printerGroups.isEmpty) {
-      _log.warning(LogType.action, 'Yazdırılacak grup yok (tüm ürün unassigned)', details: {'order_id': orderId});
-      return false;
+      _log.warning(LogType.action, 'Mutfak fişi atlandı (tüm ürün unassigned) — özet fişe DEVAM', details: {'order_id': orderId});
+      // mutfak yok ama özet fişi yine bas (return ETME)
+      await _printCustomerSummaryHtml(orderId, orderNumber);
+      return false; // mutfak basılmadı (özet denendi)
     }
 
     int successCount = 0;
