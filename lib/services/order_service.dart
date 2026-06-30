@@ -479,22 +479,27 @@ class OrderService {
   // doğrudan ESC/POS özet fişi (KASA departmanı: ürünler + toplam + ödeme). Eşleştirme YOK.
   Future<void> _printCustomerSummaryHtml(int orderId, String orderNumber) async {
     try {
+      _log.logAction('OZET-FIS BASLA: $orderNumber (order=$orderId)'); // TEŞHİS
       final cfg = await _api.getOnlineReceiptConfig();
       // Özet fişi kapalıysa hiç basma (panel ayarı)
-      if (cfg == null || cfg['print_summary'] != true) return;
+      if (cfg == null || cfg['print_summary'] != true) {
+        _log.warning(LogType.action, 'OZET-FIS ATLA: config null veya print_summary kapalı (cfg=${cfg == null ? "null" : cfg['print_summary']})', details: {'order_id': orderId}); // TEŞHİS
+        return;
+      }
 
       final sp = cfg['summary_printer'];
       if (sp is! Map) {
         _log.warning(LogType.action,
-          'Özet fişi açık ama "Özet Fiş Yazıcısı" seçili/aktif değil (panel #pos-printers) — atlandi',
-          details: {'order_id': orderId});
+          'OZET-FIS ATLA: summary_printer yok/Map değil (panel #pos-printers seçili değil)',
+          details: {'order_id': orderId, 'sp': sp.toString()});
         return;
       }
       final ip = (sp['ip_address'] ?? sp['ip'] ?? '').toString();
       final port = _intOrNull(sp['port']) ?? 9100;
       final printerName = sp['name']?.toString() ?? 'Özet Yazıcı';
+      _log.logAction('OZET-FIS yazici: $printerName ip=$ip:$port'); // TEŞHİS
       if (ip.isEmpty) {
-        _log.warning(LogType.action, 'Özet yazıcı IP yok: $printerName', details: {'order_id': orderId});
+        _log.warning(LogType.action, 'OZET-FIS ATLA: yazici IP yok: $printerName', details: {'order_id': orderId});
         return;
       }
 
@@ -506,12 +511,15 @@ class OrderService {
       // receipt-html URL'ine navigate eder (buildEscposFromOrder → loadUrl). HTML'i yalnizca URL
       // uretilemezse (key/base eksik) FALLBACK olarak veriyoruz. noprint=1 → otomatik window.print yok.
       final htmlFallback = await _api.getReceiptHtml(orderId, noprint: true);
+      _log.logAction('OZET-FIS htmlFallback uzunluk=${htmlFallback?.length ?? 0}'); // TEŞHİS
       final bytes = await _htmlPrint.buildEscposFromOrder(orderId, htmlFallback: htmlFallback);
+      _log.logAction('OZET-FIS buildEscposFromOrder bytes=${bytes?.length ?? 0}'); // TEŞHİS
       if (bytes == null || bytes.isEmpty) {
-        _log.warning(LogType.error, 'Özet HTML→ESC/POS raster üretilemedi: $orderNumber', details: {'order_id': orderId});
+        _log.warning(LogType.error, 'OZET-FIS BOS: buildEscposFromOrder null/bos döndü (PDF veya raster üretilemedi): $orderNumber', details: {'order_id': orderId});
         return;
       }
       final ok = await _printer.sendRawToIp(ip, port, bytes);
+      _log.logAction('OZET-FIS sendRawToIp=$ok → $printerName ($ip:$port) bytes=${bytes.length}'); // TEŞHİS
       if (ok) {
         _log.logAction('Müşteri özet fişi (online HTML) basildi: $orderNumber → $printerName ($ip)');
       } else {

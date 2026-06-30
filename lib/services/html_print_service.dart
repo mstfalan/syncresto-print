@@ -171,7 +171,13 @@ class HtmlPrintService {
       // kadar 50ms araliklarla (max ~3sn) yokla. Boylece printToPDF cagrildiginda print-area
       // KESIN DOLU. QR sunucu-base64 (__QR_MAP__) oldugu icin icerikle birlikte aninda hazir.
       bool ready = false;
+      int pollTurns = 0;
+      dynamic lastLen;
       for (int i = 0; i < 60; i++) {
+        pollTurns = i + 1;
+        // TEŞHİS: print-area gerçek uzunluğunu da oku (boş mu doluyor mu)
+        lastLen = await controller.evaluateJavascript(source:
+            '(function(){var p=document.getElementById("print-area");return (document.readyState==="complete"?"C":"L")+":"+(p?p.innerHTML.length:-1);})()');
         final r = await controller.evaluateJavascript(source:
             'document.readyState==="complete" && '
             '(document.getElementById("print-area")?document.getElementById("print-area").innerHTML.length:0) > 200 ? 1 : 0');
@@ -181,6 +187,7 @@ class HtmlPrintService {
         }
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
+      _log.logAction('OZET-FIS poll: ready=$ready turns=$pollTurns lastState=$lastLen'); // TEŞHİS
       if (!ready) {
         // Poll dolmadi (sayfa yine de basilabilir — bos olabilir). Tani icin logla; yine de
         // dene (eski 120ms davranisindan kotu degil) ama gercek darbogaz cozuldu.
@@ -217,9 +224,10 @@ class HtmlPrintService {
       );
 
       final dataB64 = (result is Map) ? result['data'] as String? : null;
+      _log.logAction('OZET-FIS printToPDF: dataLen=${dataB64?.length ?? 0} resultType=${result.runtimeType}'); // TEŞHİS
       if (dataB64 == null || dataB64.isEmpty) {
         _log.error(LogType.error,
-            'WebView2 CDP Page.printToPDF bos döndü (result=$result)');
+            'OZET-FIS printToPDF BOS döndü (result anahtarları=${result is Map ? (result).keys.toList() : result})');
         _finishActive(null);
         return;
       }
@@ -406,7 +414,11 @@ class HtmlPrintService {
   /// özet fişi kurtarır. (Ek katman: paperHeight makul tutuldu → dev sayfa hiç oluşmaz.)
   Future<List<int>?> _pdfToEscpos(Uint8List? pdf, {int dpi = 203}) async {
     try {
-      if (pdf == null) return null;
+      if (pdf == null) {
+        _log.warning(LogType.general, 'OZET-FIS _pdfToEscpos: pdf NULL'); // TEŞHİS
+        return null;
+      }
+      _log.logAction('OZET-FIS _pdfToEscpos: pdf=${pdf.length} byte, raster basliyor'); // TEŞHİS
 
       // PDF → raster görsel(ler). 80mm @203dpi ≈ 576px genişlik (termal tam en).
       // raster() sayfa sayfa ham RGBA verir; özet fiş tek sayfa beklenir (uzunsa birleştir).
@@ -423,6 +435,7 @@ class HtmlPrintService {
         );
         pages.add(im);
       }
+      _log.logAction('OZET-FIS _pdfToEscpos: raster sayfa=${pages.length}${pages.isNotEmpty ? " ilk=${pages.first.width}x${pages.first.height}" : ""}'); // TEŞHİS
       if (pages.isEmpty) return null;
 
       // Sayfaları dikey birleştir (tek görsel) — termal genişliğine (576px) ölçekle.

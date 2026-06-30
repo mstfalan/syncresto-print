@@ -237,23 +237,26 @@ class LogService {
     }
 
     try {
+      // 30 Haz 2026: SyncResto Print app → /api/print/logs + X-Print-Key (eskiden /api/pos/logs
+      // + X-API-Key idi → print app X-Print-Key kullandığı için loglar HİÇ ulaşmıyordu, kör uçuş).
+      // Her log'a app_version/platform/device_id gömülü (backend pos_logs'a yazar).
       final response = await _dio!.post(
-        '/api/pos/logs',
+        '/api/print/logs',
         options: Options(
           headers: {
-            'X-API-Key': _apiKey,
-            'X-Device-Id': _deviceId,
-            'X-App-Version': _appVersion,
-            'X-Platform': _platform,
+            'X-Print-Key': _apiKey,
           },
         ),
         data: {
-          'logs': logsToSend.map((l) => l.toJson()).toList(),
-          'device_info': {
-            'device_id': _deviceId,
-            'app_version': _appVersion,
-            'platform': _platform,
-          },
+          'logs': logsToSend.map((l) {
+            final j = l.toJson();
+            j['app_version'] = _appVersion;
+            j['platform'] = _platform;
+            j['device_id'] = _deviceId;
+            j['level'] = j['log_level'];
+            j['type'] = j['log_type'];
+            return j;
+          }).toList(),
         },
       );
 
