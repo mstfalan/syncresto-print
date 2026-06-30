@@ -18,8 +18,15 @@ class WebSocketService {
   Function(Map<String, dynamic>)? onNewOrder;
   Function(bool)? onConnectionChange;
   // 28 Haz 2026: yeniden bağlanınca (reconnect) kaçan siparişleri telafi et.
-  // İlk bağlantı dahil her başarılı bağlantıda çağrılır (app açılışında kaçanlar da basılsın).
-  Future<void> Function()? onReconnected;
+  // 30 Haz 2026: parametre [isReconnect] — true ise GERÇEK reconnect (disconnect→connect),
+  // false ise app açılışındaki İLK bağlantı. Socket connect/disconnect FIRTINASI'nda
+  // her onConnect bu callback'i tetikliyordu → her açık sipariş "işlendi" sayılıp
+  // gerçek order-received atlanıyordu. Artık yalnızca gerçek kopma sonrası telafi yapılır.
+  Future<void> Function(bool isReconnect)? onReconnected;
+
+  // 30 Haz 2026: GERÇEK reconnect tespiti. İlk onConnect'te false; bir kez bağlanıp
+  // sonra koptuğumuzda true olur → sonraki onConnect gerçek reconnect demektir.
+  bool _everConnected = false;
 
   bool get isConnected => _isConnected;
 
@@ -50,13 +57,18 @@ class WebSocketService {
 
       _socket!.onConnect((_) {
         print('[WebSocket] Connected');
+        final bool isReconnect = _everConnected; // ilk bağlantı false, sonrakiler true
+        _everConnected = true;
         _isConnected = true;
         onConnectionChange?.call(true);
-        _logService.info(LogType.general, 'WebSocket baglantisi kuruldu', details: {'server': _serverUrl});
-        // 28 Haz 2026: bağlantı kurulunca (ilk + her reconnect) kaçan siparişleri telafi et.
+        _logService.info(LogType.general, 'WebSocket baglantisi kuruldu',
+            details: {'server': _serverUrl, 'reconnect': isReconnect});
+        // 30 Haz 2026: ilk bağlantıda seed (geçmiş atla), gerçek reconnect'te telafi.
+        // Storm yüzünden gelen art-arda onConnect'lerde isReconnect=true olur ama
+        // OrderService tarafı yaş-kontrolü (app start time) ile yeni siparişi korur.
         final cb = onReconnected;
         if (cb != null) {
-          cb().catchError((e) => print('[WebSocket] onReconnected telafi hatasi: $e'));
+          cb(isReconnect).catchError((e) => print('[WebSocket] onReconnected telafi hatasi: $e'));
         }
       });
 

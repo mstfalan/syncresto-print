@@ -84,19 +84,29 @@ class OrderService {
   // Sadece program açıldıktan SONRA socket kopup yeniden bağlanırsa telafi yapılır.
   bool _firstConnect = true;
 
+  // 30 Haz 2026 — KÖK NEDEN FIX: app açılış zamanı. seed/missed telafisi YALNIZCA
+  // bu andan ÖNCE oluşmuş siparişleri "işlendi" sayabilir. Böylece app açıldıktan
+  // SONRA gelen yeni sipariş ASLA _processedOrderIds'e pre-mark edilmez → gerçek
+  // order-received daima _printOrderViaBackendGroups'a ulaşır.
+  // (Eski bug: printWebOrder printed_at set etmediği için unprinted listesi son
+  //  4 saatlik TÜM web siparişini döndürüyordu; reconnect storm'da bunlar yeni
+  //  siparişten önce sete giriyor → order-received satır 162'de atlanıyordu.)
+  final DateTime _appStartTime = DateTime.now().toUtc();
+
   void start() {
     _ws.onNewOrder = (orderData) async {
       await _handleIncomingOrder(orderData);
     };
     // 28 Haz 2026: socket bağlanınca kaçan siparişleri telafi et.
     // 29 Haz 2026: İLK bağlantıda (program açılışı) telafi YAPMA — geçmiş atlanır.
-    // Açılışta var olan tüm açık siparişler _processedOrderIds'e eklenir (bir daha basılmaz).
-    _ws.onReconnected = () async {
+    // 30 Haz 2026: isReconnect parametresi — storm'daki sahte onConnect'ler telafi tetiklemesin.
+    _ws.onReconnected = (bool isReconnect) async {
       if (_firstConnect) {
         _firstConnect = false;
-        await _seedProcessedFromHistory();   // geçmişi "işlendi" say, basma
+        await _seedProcessedFromHistory();   // açılış öncesi geçmişi "işlendi" say, basma
         return;
       }
+      if (!isReconnect) return;              // ilk-değil ama gerçek-reconnect-değil → atla
       await printMissedOrders();             // gerçek reconnect → kaçanları telafi et
     };
   }
@@ -104,16 +114,34 @@ class OrderService {
   /// 29 Haz 2026: Program açılışında var olan basılmamış siparişleri "işlendi" olarak
   /// işaretle (basMA). Böylece açılış-anı geçmişi atlanır; bundan SONRA gelen yeni
   /// siparişler normal işlenir. Reconnect telafisi de bunları tekrar çekmez.
+  /// 30 Haz 2026: SADECE app başlamadan ÖNCE oluşmuş siparişler seed'lenir
+  /// (created_at < _appStartTime). Yeni gelen sipariş bu sete asla girmez.
   Future<void> _seedProcessedFromHistory() async {
     try {
       final existing = await _api.getUnprintedOrders(windowMin: 240);
+      int seeded = 0;
       for (final o in existing) {
         final id = _intOrNull(o['id']);
-        if (id != null) _processedOrderIds.add(id);
+        if (id == null) continue;
+        if (!_isBeforeAppStart(o['created_at'])) continue; // app açıldıktan sonra olanı ATLA (basılabilsin)
+        _processedOrderIds.add(id);
+        seeded++;
       }
-      _log.logAction('Açılış: ${existing.length} geçmiş sipariş atlandı (sadece bundan sonrakiler basılır)');
+      _log.logAction('Açılış: $seeded geçmiş sipariş atlandı (sadece açılış sonrası gelenler basılır)');
     } catch (e) {
       _log.warning(LogType.action, 'Açılış geçmiş atlama hatasi: $e');
+    }
+  }
+
+  /// 30 Haz 2026: created_at app açılışından ÖNCE mi? Parse edilemezse GÜVENLİ taraf =
+  /// "öncedir değil" (false) → yeni varsay, basılmasına izin ver (sipariş kaçmasın).
+  bool _isBeforeAppStart(dynamic createdAt) {
+    if (createdAt == null) return false;
+    try {
+      final dt = DateTime.parse(createdAt.toString()).toUtc();
+      return dt.isBefore(_appStartTime);
+    } catch (_) {
+      return false;
     }
   }
 
@@ -171,9 +199,11 @@ class OrderService {
 
   // ==========================================================================
   // 28 Haz 2026 — RECONNECT TELAFİSİ
-  // Socket koptuğunda kaçan siparişleri çek + bas. websocket_service onConnect'te
-  // (yeniden bağlanınca) çağrılır. Backend /orders/recent?unprinted=1 (printed_at NULL).
-  // auto=1 → kaynak-bazlı otomatik-yazdırma kapalıysa backend boş döner (merkezi karar).
+  // Socket koptuğunda kaçan siparişleri çek + bas. 30 Haz 2026: ARTIK YALNIZCA
+  // GERÇEK reconnect'te (disconnect→connect) çağrılır — eskiden her onConnect'te
+  // (storm'da dakikada bir) çağrılıp her açık siparişi _processedOrderIds'e
+  // doldurup gerçek order-received'i atlatıyordu. Backend /orders/recent?unprinted=1
+  // (printed_at NULL). auto=1 → kaynak otomatik kapalıysa boş döner (merkezi karar).
   // Çift-basım: _processedOrderIds + backend printed_at kontrolü.
   // ==========================================================================
   Future<void> printMissedOrders() async {
