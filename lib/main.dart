@@ -6,6 +6,7 @@ import 'services/storage_service.dart';
 import 'services/sound_service.dart';
 import 'services/print_queue_service.dart';
 import 'services/update_service.dart';
+import 'services/log_service.dart';
 import 'screens/setup_screen.dart';
 import 'screens/orders_screen.dart';
 
@@ -38,6 +39,17 @@ void main() async {
       hasSession = true;
       print('[main] validate fail: ${result['error']} — yine de session açıldı');
     }
+  }
+
+  // 30 Haz 2026 — LogService init (KÖR UÇUŞ FIX): eskiden HİÇ çağrılmıyordu →
+  // _dio/_apiKey null → flush() erken-return → özet-fiş/raster logları SAHADAN GELMİYORDU.
+  // Oturum varsa (base+key set) paylasilan ApiService Dio + print-key ile baslat → loglar
+  // sunucuya akar (özet fiş raster hatasi vs. artik gorunur). Hata olsa bile (auth/endpoint)
+  // loglar pending kalir, app etkilenmez — basim/onizleme akisina dokunmaz.
+  if (hasSession && savedKey != null) {
+    try {
+      await LogService().init(api.dio, savedKey);
+    } catch (_) {}
   }
 
   // Print queue background retry — oturum varsa baslat

@@ -58,6 +58,20 @@ class HtmlPrintService {
   // ve headless webview'i seri kullanmak en güvenlisi. Completer zinciri ile seri kuyruk.
   Future<void> _serialLock = Future<void>.value();
 
+  // 30 Haz 2026 — ÖNİZLEME HIZLANDIRMA: KALICI (singleton) headless WebView2.
+  // Eski kod her işte yeni HeadlessInAppWebView oluşturup run() (WebView2/Edge süreç
+  // soğuk-init, ~yüzlerce ms) edip dispose ediyordu → art arda/çakışan basım+önizlemede
+  // hissedilir gecikme. Artık WebView2'yi BİR KEZ run() edip tutuyoruz; her iş sadece
+  // loadUrl + CDP printToPDF. _runSerial zaten tek-seferde-tek-iş garantiliyor → paylaşım
+  // güvenli (per-iş durumu instance alanlarında). Sadece Windows'ta yaşar; app kapanınca
+  // disposeShared ile kapatılır (zorunlu değil — OS süreç temizler).
+  HeadlessInAppWebView? _sharedHeadless;
+  InAppWebViewController? _sharedController;
+  // Aktif iş durumu (tek anda tek iş — _runSerial garantisi). onLoadStop bunları okur.
+  Completer<Uint8List?>? _activeCompleter;
+  bool _activeResolved = false;
+  String? _activeUrl; // url yolu mu (about:blank sahte-sinyalini ele)
+
   /// WebView2 loadData baseUrl fallback origin'i — HARDCODED domain YOK. Tenant'in
   /// ApiService base'inden (scheme://host) turetilir; yoksa guvenli varsayilan.
   String _baseOriginForWebView() {
@@ -131,105 +145,139 @@ class HtmlPrintService {
     return _runSerial<Uint8List>(() => _renderToPdfInternal(html: html));
   }
 
-  /// Asıl WebView2 + CDP işi. `url` verilirse loadUrl (TERCIH — gercek origin, 2MB yok),
-  /// yoksa `html` ile loadData (fallback). _runSerial içinden çağrılır (kilitli).
-  Future<Uint8List?> _renderToPdfInternal({String? url, String? html}) async {
-    HeadlessInAppWebView? headless;
-    final pdfCompleter = Completer<Uint8List?>();
-    var resolved = false;
+  // Aktif işi bitir (onLoadStop/onReceivedError/timeout buradan tetikler).
+  void _finishActive(Uint8List? bytes) {
+    if (_activeResolved) return;
+    _activeResolved = true;
+    final c = _activeCompleter;
+    if (c != null && !c.isCompleted) c.complete(bytes);
+  }
 
-    void finish(Uint8List? bytes) {
-      if (resolved) return;
-      resolved = true;
-      if (!pdfCompleter.isCompleted) pdfCompleter.complete(bytes);
-    }
-
-    // CDP printToPDF + sonuc okuma (onLoadStop icinden cagrilir).
-    Future<void> capturePdf(InAppWebViewController controller) async {
-      try {
-        // Render-bitti GARANTISI: sabit beklemeden once gercek 'load' event'ini bekle
-        // (about:blank false-positive'i + DOM/QR yarim render tuzagini eler). Sayfa
-        // zaten complete ise hemen, degilse window load'a kadar (max ~10sn) bekle.
-        await controller.evaluateJavascript(source: '''
-          (function(){ return new Promise(function(res){
-            if (document.readyState === 'complete') { res(true); return; }
-            var done=false; var fin=function(){ if(!done){done=true;res(true);} };
-            window.addEventListener('load', fin, {once:true});
-            setTimeout(fin, 10000);
-          }); })()
-        ''');
-        // QR canvas/SVG cizimi + web-font yuklemesi icin kucuk tampon.
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-
-        // CDP Page.printToPDF — Chromium'un kendi PDF motoru (window.print ile aynı).
-        // 80mm fiş: paperWidth=3.149in, kenarlar ~0, printBackground=true, scale=1.
-        // preferCSSPageSize=true → HTML'de @page size varsa ona uyar.
-        // transferMode=ReturnAsBase64 → 'data' alanini base64 ile doldurur (stream YOK;
-        // WebView2'de CDP IO.read stream'leri pratikte kullanilamaz → acik garanti).
-        final result = await controller.callDevToolsProtocolMethod(
-          methodName: 'Page.printToPDF',
-          parameters: {
-            'printBackground': true,
-            'scale': 1.0,
-            'paperWidth': 3.149, // 80mm = 3.149 inch
-            'paperHeight': 200.0, // büyük → fiş tek sayfa (uzunsa CDP böler)
-            'marginTop': 0.0,
-            'marginBottom': 0.0,
-            'marginLeft': 0.0,
-            'marginRight': 0.0,
-            'preferCSSPageSize': true,
-            'displayHeaderFooter': false,
-            'transferMode': 'ReturnAsBase64',
-          },
-        );
-
-        final dataB64 = (result is Map) ? result['data'] as String? : null;
-        if (dataB64 == null || dataB64.isEmpty) {
-          _log.error(LogType.error,
-              'WebView2 CDP Page.printToPDF bos döndü (result=$result)');
-          finish(null);
-          return;
-        }
-        finish(base64Decode(dataB64));
-      } catch (e) {
-        _log.error(LogType.error, 'WebView2 CDP printToPDF hatasi: $e');
-        finish(null);
-      }
-    }
-
+  /// CDP printToPDF + sonuc okuma (paylasimli onLoadStop icinden cagrilir).
+  Future<void> _capturePdf(InAppWebViewController controller) async {
     try {
-      headless = HeadlessInAppWebView(
-        // Gizli/ekran-dışı render — görünür pencere açılmaz.
-        initialSize: const Size(384, 1200), // ~80mm @96dpi genişlik referansı
-        initialSettings: InAppWebViewSettings(
-          transparentBackground: false,
-          // JS sayfanın kendi QR/format script'i için açık (TAM HTML, static değil).
-          javaScriptEnabled: true,
-          supportZoom: false,
-        ),
-        onLoadStop: (controller, loadedUrl) async {
-          // about:blank = sahte sinyal (loadData null-origin VEYA henuz navigate olmamis).
-          // URL yolundayken bunu yok say; gercek receipt-html URL'i gelince calis.
-          final u = loadedUrl?.toString() ?? '';
-          if (url != null && (u.isEmpty || u.startsWith('about:blank'))) {
-            return;
-          }
-          await capturePdf(controller);
-        },
-        onReceivedError: (controller, request, error) {
-          // Ana frame yükleme hatası → PDF üretilemez.
-          _log.warning(LogType.general,
-              'WebView2 yükleme hatasi: ${error.description} (${request.url})');
-          finish(null);
+      // Render-bitti GARANTISI: sabit beklemeden once gercek 'load' event'ini bekle
+      // (about:blank false-positive'i + DOM/QR yarim render tuzagini eler). Sayfa
+      // zaten complete ise hemen, degilse window load'a kadar (max ~10sn) bekle.
+      await controller.evaluateJavascript(source: '''
+        (function(){ return new Promise(function(res){
+          if (document.readyState === 'complete') { res(true); return; }
+          var done=false; var fin=function(){ if(!done){done=true;res(true);} };
+          window.addEventListener('load', fin, {once:true});
+          setTimeout(fin, 10000);
+        }); })()
+      ''');
+      // QR canvas/SVG cizimi + web-font yuklemesi icin kucuk tampon (300→120ms: 'load'
+      // zaten beklendi, fontlar genelde hazir; onizleme/basim hizlanir).
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+
+      // CDP Page.printToPDF — Chromium'un kendi PDF motoru (window.print ile aynı).
+      // 80mm fiş: paperWidth=3.149in, kenarlar ~0, printBackground=true, scale=1.
+      // preferCSSPageSize=true → HTML'de @page size varsa ona uyar.
+      // transferMode=ReturnAsBase64 → 'data' alanini base64 ile doldurur (stream YOK;
+      // WebView2'de CDP IO.read stream'leri pratikte kullanilamaz → acik garanti).
+      final result = await controller.callDevToolsProtocolMethod(
+        methodName: 'Page.printToPDF',
+        parameters: {
+          'printBackground': true,
+          'scale': 1.0,
+          'paperWidth': 3.149, // 80mm = 3.149 inch
+          // 30 Haz 2026 — paperHeight 200in DEĞİL: 200in @203dpi ≈ 40.600px dev bitmap
+          // (eski toPng yolunda dart:ui 8192 doku sınırını ~5× aşıp özet fişi öldürüyordu).
+          // 60in hâlâ uzun pazaryeri fişlerine yeter; içerik aşarsa CDP böler, _mergeVertical
+          // birleştirir (tek görsel). Yeni RGBA decode yolu zaten boyut-güvenli; bu ek emniyet.
+          'paperHeight': 60.0,
+          'marginTop': 0.0,
+          'marginBottom': 0.0,
+          'marginLeft': 0.0,
+          'marginRight': 0.0,
+          'preferCSSPageSize': true,
+          'displayHeaderFooter': false,
+          'transferMode': 'ReturnAsBase64',
         },
       );
 
-      await headless.run();
+      final dataB64 = (result is Map) ? result['data'] as String? : null;
+      if (dataB64 == null || dataB64.isEmpty) {
+        _log.error(LogType.error,
+            'WebView2 CDP Page.printToPDF bos döndü (result=$result)');
+        _finishActive(null);
+        return;
+      }
+      _finishActive(base64Decode(dataB64));
+    } catch (e) {
+      _log.error(LogType.error, 'WebView2 CDP printToPDF hatasi: $e');
+      _finishActive(null);
+    }
+  }
 
-      final controller = headless.webViewController;
+  /// Paylasilan (singleton) headless WebView2'yi garanti et (bir kez run). Windows-only.
+  /// Soguk-init yalnizca ILK cagrida olur; sonraki isler ucuz loadUrl ile gelir.
+  Future<InAppWebViewController?> _ensureSharedWebView() async {
+    if (_sharedController != null) return _sharedController;
+    final headless = HeadlessInAppWebView(
+      // Gizli/ekran-dışı render — görünür pencere açılmaz.
+      initialSize: const Size(384, 1200), // ~80mm @96dpi genişlik referansı
+      initialSettings: InAppWebViewSettings(
+        transparentBackground: false,
+        // JS sayfanın kendi QR/format script'i için açık (TAM HTML, static değil).
+        javaScriptEnabled: true,
+        supportZoom: false,
+      ),
+      onLoadStop: (controller, loadedUrl) async {
+        // about:blank = sahte sinyal (loadData null-origin VEYA henuz navigate olmamis).
+        // URL yolundayken bunu yok say; gercek receipt-html URL'i gelince calis.
+        final u = loadedUrl?.toString() ?? '';
+        if (_activeUrl != null && (u.isEmpty || u.startsWith('about:blank'))) {
+          return;
+        }
+        await _capturePdf(controller);
+      },
+      onReceivedError: (controller, request, error) {
+        // Ana frame yükleme hatası → PDF üretilemez.
+        _log.warning(LogType.general,
+            'WebView2 yükleme hatasi: ${error.description} (${request.url})');
+        _finishActive(null);
+      },
+    );
+    await headless.run();
+    final controller = headless.webViewController;
+    if (controller == null) {
+      _log.error(LogType.error, 'WebView2 controller null (headless run basarisiz)');
+      try {
+        await headless.dispose();
+      } catch (_) {}
+      return null;
+    }
+    _sharedHeadless = headless;
+    _sharedController = controller;
+    return controller;
+  }
+
+  /// App kapanırken paylasilan WebView2'yi serbest birak (zorunlu degil; OS de temizler).
+  Future<void> disposeShared() async {
+    try {
+      await _sharedHeadless?.dispose();
+    } catch (_) {}
+    _sharedHeadless = null;
+    _sharedController = null;
+  }
+
+  /// Asıl WebView2 + CDP işi. `url` verilirse loadUrl (TERCIH — gercek origin, 2MB yok),
+  /// yoksa `html` ile loadData (fallback). _runSerial içinden çağrılır (kilitli → tek anda
+  /// tek iş; per-iş durumu instance alanlarinda guvenli). Paylasilan singleton WebView2'yi
+  /// yeniden kullanir (soguk-init tekrarlanmaz → onizleme hizlanir).
+  Future<Uint8List?> _renderToPdfInternal({String? url, String? html}) async {
+    // Per-iş durumunu hazirla (kilit altinda — yarismaz).
+    final pdfCompleter = Completer<Uint8List?>();
+    _activeCompleter = pdfCompleter;
+    _activeResolved = false;
+    _activeUrl = url;
+
+    try {
+      final controller = await _ensureSharedWebView();
       if (controller == null) {
-        _log.error(LogType.error, 'WebView2 controller null (headless run basarisiz)');
-        finish(null);
+        _finishActive(null);
       } else if (url != null) {
         // TERCIH EDILEN YOL: gercek HTTP URL'ine navigate (loadUrl = native Navigate).
         // baseUrl/2MB sorunu YOK; gercek origin → CSS/JS/QR cozulur → dolu printToPDF.
@@ -256,11 +304,14 @@ class HtmlPrintService {
       return pdf;
     } catch (e) {
       _log.error(LogType.error, '→PDF (WebView2) genel hata: $e');
+      // Paylasilan webview bozulmus olabilir → bir sonraki is taze kursun.
+      await disposeShared();
       return null;
     } finally {
-      try {
-        await headless?.dispose();
-      } catch (_) {}
+      // Per-iş alanlarini temizle (bir sonraki is taze baslasin).
+      _activeCompleter = null;
+      _activeResolved = true;
+      _activeUrl = null;
     }
   }
 
@@ -322,17 +373,36 @@ class HtmlPrintService {
   }
 
   /// PDF bytes → ESC/POS raster (ortak son adim). null PDF → null.
+  ///
+  /// 30 Haz 2026 — KÖK NEDEN FIX (özet fiş KASA'dan çıkmıyor):
+  /// Eski kod her sayfa için `page.toPng()` çağırıyordu. `toPng()` (printing/raster.dart)
+  /// içeride `ui.decodeImageFromPixels` + `image.toByteData(png)` kullanır → dart:ui'nin
+  /// Skia DOKU (texture) sınırı 8192px'e tabidir. Fiş PDF sayfası çok uzun olduğunda
+  /// (paperHeight büyük → 203dpi'de on binlerce px yükseklik) bu sınır AŞILIR → görsel
+  /// cap'lenir/bozulur, `toByteData` null/çöp döner → decodePng null → `pages` BOŞ →
+  /// `_pdfToEscpos` null → "Özet HTML→ESC/POS raster üretilemedi" → KASA'ya HİÇ basılmaz.
+  /// ÇÖZÜM: `toPng()`/dart:ui'yi tamamen ATLA. `Printing.raster` zaten ham RGBA piksel
+  /// (PdfRaster.pixels) veriyor → doğrudan `img.Image.fromBytes` (saf CPU, image paketi)
+  /// ile decode et. image paketi keyfi boyutu işler (8192 doku sınırı YOK). Bu tek başına
+  /// özet fişi kurtarır. (Ek katman: paperHeight makul tutuldu → dev sayfa hiç oluşmaz.)
   Future<List<int>?> _pdfToEscpos(Uint8List? pdf, {int dpi = 203}) async {
     try {
       if (pdf == null) return null;
 
       // PDF → raster görsel(ler). 80mm @203dpi ≈ 576px genişlik (termal tam en).
-      // raster() sayfa sayfa image verir; özet fiş tek sayfa beklenir (uzunsa birleştir).
+      // raster() sayfa sayfa ham RGBA verir; özet fiş tek sayfa beklenir (uzunsa birleştir).
       final List<img.Image> pages = [];
       await for (final page in Printing.raster(pdf, dpi: dpi.toDouble())) {
-        final png = await page.toPng();
-        final decoded = img.decodePng(png);
-        if (decoded != null) pages.add(decoded);
+        // toPng()/decodeImageFromPixels (dart:ui 8192 doku sınırı) YERİNE ham RGBA'dan
+        // doğrudan img.Image kur — keyfi yükseklik güvenli, raster null dönmez.
+        final im = img.Image.fromBytes(
+          width: page.width,
+          height: page.height,
+          bytes: page.pixels.buffer,
+          numChannels: 4,
+          order: img.ChannelOrder.rgba,
+        );
+        pages.add(im);
       }
       if (pages.isEmpty) return null;
 

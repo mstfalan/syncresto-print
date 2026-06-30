@@ -38,6 +38,10 @@ class ApiService {
   String? get apiKey => _apiKey;
   String get baseUrl => _baseUrl;
 
+  /// 30 Haz 2026 — LogService init icin paylasilan Dio (baseUrl + X-Print-Key zaten ayarli).
+  /// LogService bunu kullanip /api/print/logs'a log yollar (saha kor-ucusu biter).
+  Dio get dio => _dio;
+
   /// Lisans dogrulama (X-Print-Key header ile)
   /// Backend: POST /api/print/validate
   Future<Map<String, dynamic>> validateApiKey(String apiKey) async {
