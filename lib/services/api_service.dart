@@ -280,6 +280,25 @@ class ApiService {
     }
   }
 
+  /// 30 Haz 2026 — receipt-html ENDPOINT'inin TAM URL'i (WebView2 loadUrl icin).
+  /// KÖK NEDEN FIX: loadData (NavigateToString) Windows'ta baseUrl'i yok sayar →
+  /// null-origin about:blank + 2MB sinir → printToPDF BOS data. Cozum: HTML string'i
+  /// hic tasima, WebView2'yi GERCEK HTTP URL'ine navigate ettir (gercek origin →
+  /// CSS/JS/QR cozulur, 2MB sinir yok). Auth: backend print-app-auth ?key= query'i
+  /// destekler (X-Print-Key header yerine — WebView2 navigation custom header gonderemez).
+  /// MULTI-TENANT: base ApiService().baseUrl'den, key setup'tan — HARDCODED domain YOK.
+  /// key bos ise null doner (caller eski HTML yoluna fallback eder).
+  String? receiptHtmlUrl(int orderId, {bool noprint = true}) {
+    final base = _baseUrl;
+    final key = _apiKey;
+    if (base.isEmpty || key == null || key.isEmpty) return null;
+    final qp = <String>[
+      'key=${Uri.encodeQueryComponent(key)}',
+      if (noprint) 'noprint=1',
+    ];
+    return '$base/api/print/orders/$orderId/receipt-html?${qp.join('&')}';
+  }
+
   /// Reconnect telafisi: basilmamis (printed_at NULL) son siparisler.
   /// auto=1 -> backend kaynak-bazli otomatik-yazdirma kapaliysa BOS doner (merkezi karar).
   Future<List<Map<String, dynamic>>> getUnprintedOrders({int windowMin = 120, bool auto = true}) async {

@@ -469,16 +469,14 @@ class OrderService {
       }
 
       // 29 Haz 2026 — ÖZET FİŞİ = SİTEDEKİ ÖZEL HTML (BİREBİR). Backend /orders/:id/receipt-html
-      // (admin.js generateReceiptHTML + admin.css + QR, TEK KAYNAK). HTML → görsel → ESC/POS raster
+      // (admin.js generateReceiptHTML + admin.css + QR, TEK KAYNAK). → görsel → ESC/POS raster
       // → AĞ termaline IP:9100 (OS yazıcı eşleştirme YOK). Mutfak fişinden TAMAMEN farklı tasarım.
-      // JS'li TAM HTML (static KALDIRILDI): gerçek Chromium/WebView2 sayfanın JS'ini çalıştırır,
-      // QR'ı kendi üretir. noprint=1 → otomatik window.print tetiklenmesin (PDF'i biz CDP ile alırız).
-      final html = await _api.getReceiptHtml(orderId, noprint: true);
-      if (html == null || html.isEmpty) {
-        _log.warning(LogType.action, 'Özet HTML fişi alinamadi: $orderNumber', details: {'order_id': orderId});
-        return;
-      }
-      final bytes = await _htmlPrint.buildEscposFromHtml(html);
+      // 30 Haz 2026 — KÖK NEDEN FIX (printToPDF BOS data): HTML string'i WebView2'ye loadData ile
+      // VERMEK Windows'ta about:blank/null-origin + 2MB sinir → bos PDF. ARTIK WebView2 GERCEK
+      // receipt-html URL'ine navigate eder (buildEscposFromOrder → loadUrl). HTML'i yalnizca URL
+      // uretilemezse (key/base eksik) FALLBACK olarak veriyoruz. noprint=1 → otomatik window.print yok.
+      final htmlFallback = await _api.getReceiptHtml(orderId, noprint: true);
+      final bytes = await _htmlPrint.buildEscposFromOrder(orderId, htmlFallback: htmlFallback);
       if (bytes == null || bytes.isEmpty) {
         _log.warning(LogType.error, 'Özet HTML→ESC/POS raster üretilemedi: $orderNumber', details: {'order_id': orderId});
         return;

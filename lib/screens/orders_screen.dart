@@ -504,13 +504,11 @@ class _OrdersScreenState extends State<OrdersScreen> {
     messenger.showSnackBar(const SnackBar(content: Text('Önizleme hazırlanıyor...'), duration: Duration(seconds: 1)));
 
     try {
-      final html = await _api.getReceiptHtml(orderId, noprint: true);
-      if (html == null || html.isEmpty) {
-        if (!mounted) return;
-        messenger.showSnackBar(const SnackBar(content: Text('Fiş HTML alınamadı'), backgroundColor: Color(0xFFDC2626)));
-        return;
-      }
-      final pdf = await _htmlPrint.buildPdfFromHtml(html);
+      // 30 Haz 2026 — KÖK NEDEN FIX: WebView2 GERCEK receipt-html URL'ine navigate eder
+      // (buildPdfFromOrder → loadUrl) → null-origin/2MB sorunu YOK → dolu PDF. HTML'i yalnizca
+      // URL uretilemezse (key/base eksik) fallback olarak veriyoruz.
+      final htmlFallback = await _api.getReceiptHtml(orderId, noprint: true);
+      final pdf = await _htmlPrint.buildPdfFromOrder(orderId, htmlFallback: htmlFallback);
       if (pdf == null || pdf.isEmpty) {
         if (!mounted) return;
         messenger.showSnackBar(const SnackBar(content: Text('Önizleme PDF üretilemedi'), backgroundColor: Color(0xFFDC2626)));
