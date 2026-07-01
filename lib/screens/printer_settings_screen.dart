@@ -94,6 +94,30 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
     }
   }
 
+  // 1 Tem 2026: varsayılan yazıcı SEÇİMİNİ KALDIR (null yap). Eskiden bir kez seçilince
+  // geri alınamıyordu — artık aynı butona tekrar basınca temizlenir.
+  Future<void> _clearDefault() async {
+    setState(() => _defaultPrinterId = null);
+    _printerService.setSelectedPrinter(null);
+    await _storage.clearSelectedPrinter();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Varsayılan fallback yazıcı kaldırıldı'),
+        backgroundColor: Color(0xFF64748B),
+      ));
+    }
+  }
+
+  // Toggle: zaten varsayılansa kaldır, değilse seç.
+  Future<void> _toggleDefault(Map<String, dynamic> printer) async {
+    final id = printer['id'];
+    if (id == _defaultPrinterId) {
+      await _clearDefault();
+    } else {
+      await _selectDefault(printer);
+    }
+  }
+
   Future<void> _testPrinter(Map<String, dynamic> printer) async {
     setState(() => _testing = true);
     final ip = (printer['ip_address'] ?? printer['ip'] ?? '').toString();
@@ -483,10 +507,10 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                             onPressed: _testing ? null : () => _testPrinter(p),
                           ),
                           IconButton(
-                            tooltip: isDefault ? 'Varsayılan' : 'Varsayılan yap',
+                            tooltip: isDefault ? 'Varsayılanı kaldır' : 'Varsayılan yap',
                             icon: Icon(isDefault ? Icons.check_circle : Icons.radio_button_unchecked,
                                 color: isDefault ? const Color(0xFF16A34A) : Colors.grey),
-                            onPressed: isActive ? () => _selectDefault(p) : null,
+                            onPressed: isActive ? () => _toggleDefault(p) : null,
                           ),
                         ]),
                       ),
