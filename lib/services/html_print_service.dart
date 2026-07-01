@@ -450,10 +450,15 @@ class HtmlPrintService {
 
       // Sayfaları dikey birleştir (tek görsel) — termal genişliğine (576px) ölçekle.
       final merged = _mergeVertical(pages);
+      // 1 Tem 2026 — ALT BOŞLUK KIRPMA (kağıt israfı fix): CDP printToPDF paperHeight=11in
+      // SABİT → kısa fiş bile 11in (≈2230px) sayfa üretir, içerik bitince altta yüzlerce px
+      // beyaz alan raster'a girip KASA'dan boş kağıt olarak çıkar (feed(2)+cut ondan sonra).
+      // Görselin altındaki tamamen beyaz satırları at → içerik nerede bittiyse orada kes.
+      final trimmed = _trimBottomWhitespace(merged);
       const targetWidth = 576; // 80mm @203dpi
-      final resized = merged.width > targetWidth
-          ? img.copyResize(merged, width: targetWidth)
-          : merged;
+      final resized = trimmed.width > targetWidth
+          ? img.copyResize(trimmed, width: targetWidth)
+          : trimmed;
       // Termal için 1-bit benzeri: gri tonlama (imageRaster zaten dither/threshold uygular)
       final gray = img.grayscale(resized);
 
@@ -468,6 +473,38 @@ class HtmlPrintService {
       _log.error(LogType.error, 'HTML→ESC/POS raster hatasi: $e');
       return null;
     }
+  }
+
+  // Görselin ALTINDAKİ boş (beyaz) alanı kırp — son içerik satırından sonrasını at.
+  // Kağıt israfını önler (sabit paperHeight nedeniyle içerik altında kalan beyaz şerit).
+  // İçerik satırı = o satırda ortalama parlaklığı <200 olan (koyu) piksel bulunan satır.
+  // Son içerik satırının biraz altına küçük bir pay bırakır (fişin nefes alması için).
+  img.Image _trimBottomWhitespace(img.Image src) {
+    const threshold = 200; // teşhis darkPixels ile aynı eşik
+    const bottomPadding = 16; // içerik altında bırakılacak minik boşluk (px)
+    // Adımlı tarama (her satırda her 4. piksel) — hız için, hassasiyet yeterli.
+    int lastContentRow = -1;
+    for (int y = src.height - 1; y >= 0; y--) {
+      bool hasContent = false;
+      for (int x = 0; x < src.width; x += 4) {
+        final p = src.getPixel(x, y);
+        if ((p.r + p.g + p.b) / 3 < threshold) {
+          hasContent = true;
+          break;
+        }
+      }
+      if (hasContent) {
+        lastContentRow = y;
+        break;
+      }
+    }
+    // İçerik hiç bulunamadıysa (beklenmez) dokunma — orijinali döndür.
+    if (lastContentRow < 0) return src;
+    final cutHeight = (lastContentRow + 1 + bottomPadding).clamp(1, src.height);
+    if (cutHeight >= src.height) return src; // kırpacak boşluk yok
+    _log.logAction(
+        'OZET-FIS trim: ${src.height}px → ${cutHeight}px (alt ${src.height - cutHeight}px boşluk atıldı)'); // TEŞHİS
+    return img.copyCrop(src, x: 0, y: 0, width: src.width, height: cutHeight);
   }
 
   // Birden çok sayfa görselini dikey birleştir (aynı genişliğe getirip alt alta).
