@@ -91,14 +91,11 @@ class _OrdersScreenState extends State<OrdersScreen> {
       _printerService.setSelectedPrinter(defaultPrinter);
     }
 
-    // WebSocket bağlan
-    final token = await _api.getSocketToken();
-    if (token != null) {
-      _ws.onConnectionChange = (connected) {
-        if (mounted) setState(() => _wsConnected = connected);
-      };
-      await _ws.connect(_api.baseUrl, token: token);
-    }
+    // WebSocket bağlan (token-retry'lı — 7 Tem 2026)
+    _ws.onConnectionChange = (connected) {
+      if (mounted) setState(() => _wsConnected = connected);
+    };
+    _connectSocket();
 
     // 18 May 2026: Mustafa istegi — uygulama acildiginda TEMIZ basla.
     // Sadece uygulama acikken gelen yeni siparişler liste'de gosterilir.
@@ -107,6 +104,29 @@ class _OrdersScreenState extends State<OrdersScreen> {
     // _refreshTimer = Timer.periodic(...);  // KALDIRILDI — auto-refresh yok
 
     if (mounted) setState(() => _loading = false);
+  }
+
+  // 7 Tem 2026 — KÖK NEDEN FIX: eskiden token bootstrap'te TEK SEFER çekiliyordu;
+  // getSocketToken null dönerse (geçici ağ/TLS/timeout) _ws.connect HİÇ çağrılmıyor →
+  // socket nesnesi yaratılmadığı için socket.io reconnection'ı da devreye girmiyor →
+  // başlık çubuğu KALICI "Yeniden bağlanıyor..." (etiket yalan söylüyordu). Artık token
+  // null ise 15sn sonra TEKRAR dener. Bir kez bağlanınca socket.io'nun kendi reconnect'i
+  // devralır. Basım/sipariş akışına dokunmaz — sadece socket kurulum katmanı.
+  Timer? _socketRetryTimer;
+  Future<void> _connectSocket() async {
+    if (!mounted) return;
+    final token = await _api.getSocketToken();
+    if (token != null) {
+      _socketRetryTimer?.cancel();
+      _socketRetryTimer = null;
+      await _ws.connect(_api.baseUrl, token: token);
+      return;
+    }
+    // Token alınamadı (ağ/TLS/timeout) — socket kurulmadı, 15sn sonra tekrar dene.
+    _socketRetryTimer?.cancel();
+    _socketRetryTimer = Timer(const Duration(seconds: 15), () {
+      if (mounted && !_ws.isConnected) _connectSocket();
+    });
   }
 
   Future<void> _loadOrders({bool silent = false}) async {
@@ -571,6 +591,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _socketRetryTimer?.cancel();
     _orderService.removeOnNewOrderListener(_onNewOrderArrived);
     _orderService.removeOnPrintFailedListener(_onPrintFailed);
     _orderService.removeOnUnassignedItemsListener(_onUnassignedItems);
