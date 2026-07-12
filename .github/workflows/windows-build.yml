@@ -39,6 +39,48 @@ jobs:
       - name: Build Windows
         run: flutter build windows --release
 
+      # Bu adim YEDEK (safety-net). Asil kopyalama CMake InstallRequiredSystemLibraries'te.
+      # Build'i ASLA dusurmemeli (continue-on-error) — gercek kontrolu "Verify runtime DLLs" yapar.
+      - name: Bundle VC++ runtime DLLs (fallback + safety-net)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $rel = "build\\windows\\x64\\runner\\Release"
+          function Get-HighestVersionDir($parent) {
+            if (-not (Test-Path $parent)) { return $null }
+            Get-ChildItem -Path $parent -Directory -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                $v = $null
+                if ([System.Version]::TryParse($_.Name, [ref]$v)) { [pscustomobject]@{ Ver = $v; Path = $_.FullName } }
+              } | Sort-Object Ver -Descending | Select-Object -First 1 -ExpandProperty Path
+          }
+          function Find-CrtDir($x64Root) {
+            if (-not (Test-Path $x64Root)) { return $null }
+            Get-ChildItem -Path $x64Root -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+          }
+          $crtDir = $null
+          if ($env:VCToolsRedistDir) { $crtDir = Find-CrtDir (Join-Path $env:VCToolsRedistDir "x64") }
+          if (-not $crtDir) {
+            $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
+            if (Test-Path $vswhere) {
+              $vsPath = & $vswhere -latest -products * -property installationPath
+              if ($vsPath) {
+                $verDir = Get-HighestVersionDir "$vsPath\\VC\\Redist\\MSVC"
+                if ($verDir) { $crtDir = Find-CrtDir "$verDir\\x64" }
+              }
+            }
+          }
+          if ($crtDir -and (Test-Path $crtDir)) {
+            Write-Host "CRT redist kaynagi: $crtDir"
+            Copy-Item -Path "$crtDir\\*.dll" -Destination $rel -Force
+            Write-Host "Kopyalanan CRT DLL'leri:"
+            Get-ChildItem "$rel\\*140*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.Name)" }
+          } else {
+            Write-Host "::warning::CRT redist klasoru bulunamadi; CMake kopyasina guveniliyor. Guard dogrulayacak."
+          }
+
       - name: Create self-signed certificate and sign exe
         shell: pwsh
         run: |
@@ -85,6 +127,39 @@ jobs:
         run: |
           cd build/windows/x64/runner/Release
           Compress-Archive -Path * -DestinationPath ../../../../../SyncResto-Print-Windows.zip -Force
+
+      - name: Verify runtime DLLs are in the zip (DLL yoksa veya x64 degilse build FAIL)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $required = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+          $extract = Join-Path $env:RUNNER_TEMP "zipcheck"
+          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+          Expand-Archive -Path "SyncResto-Print-Windows.zip" -DestinationPath $extract -Force
+          function Get-PeMachine([string]$path) {
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+            return [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          }
+          $exe = Get-ChildItem -Path $extract -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Host "::error::exe zip'te bulunamadi"; exit 1 }
+          $root = $exe.DirectoryName
+          Write-Host "Exe kok klasoru: $root"
+          $missing = @()
+          foreach ($dll in $required) {
+            $p = Join-Path $root $dll
+            if (-not (Test-Path $p)) { $missing += $dll; continue }
+            $m = Get-PeMachine $p
+            if ($m -ne 0x8664) { Write-Host "::error::$dll x64 DEGIL (machine=0x$($m.ToString('x')))"; exit 1 }
+            if ((Get-Item $p).Length -eq 0) { Write-Host "::error::$dll bos (0 byte)"; exit 1 }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::VC++ runtime DLL(ler) exe kokunde EKSIK: $($missing -join ', ')"
+            Get-ChildItem -Path $root -Filter *.dll | ForEach-Object { Write-Host "  $($_.Name)" }
+            exit 1
+          }
+          Write-Host "OK: Tum ZORUNLU VC++ runtime DLL'leri x64 ve exe kokunde:"
+          foreach ($dll in $required) { Write-Host "  [x] $dll" }
 
       - name: Calculate SHA-256 checksum
         id: checksum

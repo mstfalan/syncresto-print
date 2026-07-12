@@ -77,6 +77,25 @@ endif()
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 
+# === App-local VC++ Runtime (VCRUNTIME140.dll, VCRUNTIME140_1.dll, MSVCP140.dll) ===
+# Flutter template bu DLL'leri Release'e KOPYALAMAZ; musteri PC'de yoksa
+# "VCRUNTIME140_1.dll bulunamadi" hatasi verir. Flutter engine /MD (dinamik CRT)
+# ile linklendigi icin bu DLL'ler exe yaninda ZORUNLU. Statik /MT karisimi = cokme.
+# NOT: Bu blok INSTALL_BUNDLE_LIB_DIR tanimlandiktan SONRA, install(TARGETS) ONCESI olmali.
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_ARCH "amd64")   # x64 build -> x64 DLL garanti
+set(CMAKE_INSTALL_UCRT_LIBRARIES FALSE)               # UCRT Win10/11 OS parcasi, app-local ETME
+set(CMAKE_INSTALL_DEBUG_LIBRARIES FALSE)              # Release'de Debug CRT (vcruntime140d) kopyalanmasin
+set(CMAKE_INSTALL_DEBUG_LIBRARIES_ONLY FALSE)
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)      # modulun otomatik install()'unu kapat; asagida manuel
+include(InstallRequiredSystemLibraries)
+if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+  install(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    CONFIGURATIONS Profile;Release
+    COMPONENT Runtime)
+endif()
+
+
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
