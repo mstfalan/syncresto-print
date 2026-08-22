@@ -23,6 +23,8 @@ class StorageService {
   static const _keyAutoUpdateCheck = 'auto_update_check';     // default true
   static const _keyServerSideReceipt = 'server_side_receipt'; // 27 Haz 2026: sunucu ESC/POS (default KAPALI)
   static const _keyOsPrinterMap = 'os_printer_map';          // 28 Haz 2026: panel printer_id → OS yazıcı adı (özet HTML fişi)
+  static const _keyUsbFallbackEnabled = 'usb_fallback_enabled'; // 22 Ağu 2026: ağ başarısızsa USB yedek (default KAPALI)
+  static const _keyUsbFallbackPrinter = 'usb_fallback_printer';  // 22 Ağu 2026: yedek USB/OS yazıcı adı
 
   late SharedPreferences _prefs;
   bool _initialized = false;
@@ -93,6 +95,22 @@ class StorageService {
     }
     final json = jsonEncode(map.map((k, v) => MapEntry(k.toString(), v)));
     await _prefs.setString(_keyOsPrinterMap, json);
+  }
+
+  // === USB/OS yedek yazıcı (22 Ağu 2026) ===
+  // Ağ (IP:9100) gönderimi başarısızsa özet fişi USB/OS yazıcısına düşer.
+  // default AÇIK — ama yazıcı ADI seçilmemişse tetiklenmez (yanlış cihaza basmayı önler),
+  // yani USB yazıcı seçmeyen kurulumlarda davranış birebir aynıdır.
+  bool getUsbFallbackEnabled() => _prefs.getBool(_keyUsbFallbackEnabled) ?? true;
+  Future<void> saveUsbFallbackEnabled(bool v) => _prefs.setBool(_keyUsbFallbackEnabled, v);
+
+  String? getUsbFallbackPrinter() => _prefs.getString(_keyUsbFallbackPrinter);
+  Future<void> saveUsbFallbackPrinter(String? name) async {
+    if (name == null || name.isEmpty) {
+      await _prefs.remove(_keyUsbFallbackPrinter);
+    } else {
+      await _prefs.setString(_keyUsbFallbackPrinter, name);
+    }
   }
 
   // === Logout / reset ===

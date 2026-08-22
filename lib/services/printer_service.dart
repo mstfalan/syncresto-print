@@ -155,8 +155,8 @@ class PrinterService {
     return bytes;
   }
 
-  /// Test fişi (Yazıcı Ayarları'ndaki "Test Et" butonu)
-  Future<bool> testPrint(String ip, int port) async {
+  /// Test fişi byte'ları (IP ve USB testinin ORTAK kaynağı). 22 Ağu 2026: public'e çıkarıldı.
+  Future<List<int>> generateTestReceiptBytes({String? target}) async {
     final profile = await CapabilityProfile.load();
     final generator = Generator(PaperSize.mm80, profile);
     List<int> bytes = [];
@@ -167,9 +167,17 @@ class PrinterService {
     bytes += generator.text(_formatDate(DateTime.now().toIso8601String()),
       styles: const PosStyles(align: PosAlign.center));
     bytes += generator.feed(2);
-    bytes += generator.text('Yazici: $ip:$port', styles: const PosStyles(align: PosAlign.center));
+    if (target != null && target.isNotEmpty) {
+      bytes += generator.text('Yazici: $target', styles: const PosStyles(align: PosAlign.center));
+    }
     bytes += generator.feed(3);
     bytes += generator.cut();
+    return bytes;
+  }
+
+  /// Test fişi (Yazıcı Ayarları'ndaki "Test Et" butonu) — IP:9100.
+  Future<bool> testPrint(String ip, int port) async {
+    final bytes = await generateTestReceiptBytes(target: '$ip:$port');
     return await _sendToPrinter(ip, port, bytes);
   }
 

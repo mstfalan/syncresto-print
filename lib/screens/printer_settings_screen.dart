@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
@@ -7,6 +8,7 @@ import '../services/sound_service.dart';
 import '../services/order_service.dart';
 import '../services/update_service.dart';
 import '../services/html_print_service.dart'; // 28 Haz: özet HTML fişi OS yazıcı eşleştirme
+import '../services/os_printer_service.dart'; // 22 Ağu: USB/OS yedek yazıcı
 import 'package:printing/printing.dart' show Printer;
 
 /// Ayarlar ekrani — panel'den gelen yazıcı listesi (read-only + test) + uygulama tercihleri.
@@ -31,6 +33,12 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   final OrderService _orderService = OrderService();
   final UpdateService _updateService = UpdateService();
   final HtmlPrintService _htmlPrint = HtmlPrintService();
+  final OsPrinterService _osPrinter = OsPrinterService();
+
+  // 22 Ağu 2026: USB/OS yedek yazıcı (ağ başarısızsa)
+  bool _usbFallbackEnabled = true;
+  String? _usbFallbackPrinter;
+  bool _usbTesting = false;
 
   List<Map<String, dynamic>> _printers = [];
   int? _defaultPrinterId;
@@ -72,6 +80,8 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       _onlineReceiptCfg = cfg;
       _osPrinters = osPrinters;
       _summaryOsPrinterName = (summaryId is int) ? _storage.getOsPrinterName(summaryId) : null;
+      _usbFallbackEnabled = _storage.getUsbFallbackEnabled();
+      _usbFallbackPrinter = _storage.getUsbFallbackPrinter();
       _loading = false;
     });
     // Update check (sessiz)
@@ -354,6 +364,114 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
     );
   }
 
+  // 22 Ağu 2026 — AĞ BAŞARISIZSA USB/OS YEDEK YAZICI kartı (Windows-only).
+  // Özet fişi IP:9100 ile gönderilemezse USB'ye takılı yazıcıya düşer. Ağ çalışırken devreye girmez.
+  Widget _buildUsbFallbackCard() {
+    if (!Platform.isWindows) return const SizedBox.shrink();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.usb, size: 18, color: Color(0xFF0EA5E9)),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text('AĞ BAŞARISIZSA USB YEDEK YAZICI',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569), letterSpacing: 0.5)),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: _usbFallbackEnabled ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(_usbFallbackEnabled ? 'AÇIK' : 'KAPALI',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold,
+                  color: _usbFallbackEnabled ? const Color(0xFF16A34A) : const Color(0xFFB91C1C))),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          Text(
+            'Özet fişi ağ yazıcısına (IP:9100) gönderilemezse, bu bilgisayara USB ile bağlı '
+            'Windows yazıcısına basılır. Ağ çalışırken devreye girmez (çift baskı olmaz).',
+            style: TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.4),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: const Text('USB yedeği etkin', style: TextStyle(fontSize: 13)),
+            value: _usbFallbackEnabled,
+            onChanged: (v) async {
+              setState(() => _usbFallbackEnabled = v);
+              await _storage.saveUsbFallbackEnabled(v);
+            },
+          ),
+          if (_usbFallbackEnabled) ...[
+            const Text('Yedek USB/OS yazıcısı:', style: TextStyle(fontSize: 12, color: Color(0xFF475569))),
+            const SizedBox(height: 6),
+            DropdownButtonFormField<String>(
+              value: _osPrinters.any((p) => p.name == _usbFallbackPrinter) ? _usbFallbackPrinter : null,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                hintText: 'Yazıcı seçin (seçilmezse USB yedek çalışmaz)',
+              ),
+              items: [
+                const DropdownMenuItem<String>(
+                  value: null,
+                  child: Text('— Seçilmedi (USB yedek pasif) —', style: TextStyle(fontSize: 13)),
+                ),
+                ..._osPrinters.map((p) => DropdownMenuItem<String>(
+                  value: p.name,
+                  child: Text(p.name + (p.isDefault ? '  (varsayılan)' : ''),
+                    style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis),
+                )),
+              ],
+              onChanged: (v) async {
+                setState(() => _usbFallbackPrinter = v);
+                await _storage.saveUsbFallbackPrinter(v);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text(v == null ? 'USB yedek yazıcısı seçilmedi' : 'USB yedek yazıcısı: $v'),
+                    backgroundColor: const Color(0xFF16A34A),
+                  ));
+                }
+              },
+            ),
+            const SizedBox(height: 8),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              TextButton.icon(
+                onPressed: () => _load(),
+                icon: const Icon(Icons.refresh, size: 16),
+                label: Text('Yazıcılar (${_osPrinters.length})', style: const TextStyle(fontSize: 12)),
+              ),
+              ElevatedButton.icon(
+                onPressed: (_usbFallbackPrinter == null || _usbTesting)
+                  ? null
+                  : () async {
+                      setState(() => _usbTesting = true);
+                      final ok = await _osPrinter.testPrint(_usbFallbackPrinter!);
+                      if (mounted) {
+                        setState(() => _usbTesting = false);
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                          content: Text(ok ? 'USB test fişi gönderildi' : 'USB test başarısız (yazıcı hazır değil olabilir)'),
+                          backgroundColor: ok ? const Color(0xFF16A34A) : const Color(0xFFB91C1C),
+                        ));
+                      }
+                    },
+                icon: _usbTesting
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.print, size: 16),
+                label: const Text('USB Test Fişi', style: TextStyle(fontSize: 12)),
+              ),
+            ]),
+          ],
+        ]),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -429,6 +547,9 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                 const SizedBox(height: 16),
                 // === Özet Fiş (online HTML) yazıcı eşleştirme (28 Haz 2026) ===
                 _buildSummaryReceiptCard(),
+                const SizedBox(height: 16),
+                // === Ağ başarısızsa USB/OS yedek yazıcı (22 Ağu 2026) ===
+                _buildUsbFallbackCard(),
                 const SizedBox(height: 16),
                 // === Yazıcı listesi ===
                 const Padding(

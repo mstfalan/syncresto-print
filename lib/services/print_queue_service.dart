@@ -15,6 +15,8 @@ import 'local_db_service.dart';
 import 'printer_service.dart';
 import 'api_service.dart';
 import 'log_service.dart';
+import 'storage_service.dart';       // 22 Ağu 2026: USB yedek ayarı
+import 'os_printer_service.dart';    // 22 Ağu 2026: USB/OS yedek yazıcı
 
 class PrintQueueService {
   static final PrintQueueService _instance = PrintQueueService._internal();
@@ -25,6 +27,8 @@ class PrintQueueService {
   final PrinterService _printer = PrinterService();
   final ApiService _api = ApiService();
   final LogService _log = LogService();
+  final StorageService _storage = StorageService();
+  final OsPrinterService _osPrinter = OsPrinterService();
 
   Timer? _timer;
   bool _processing = false;
@@ -121,6 +125,22 @@ class PrintQueueService {
         _log.logAction('[PrintQueue] OK job=$id printer=$ip orderNumber=${job['order_number']}');
         return true;
       } else {
+        // 22 Ağu 2026 — özet fişi ('raw') retry'leri tükeniyorsa USB/OS yedeğe SON çare.
+        // IP denemelerinin hepsi başarısız (ağa hiç ulaşmadı) → USB'ye basmak çift-basım üretmez.
+        // Sadece 'raw' (özet fişi) — mutfak 'order'/'cancel' akışına DOKUNMA.
+        final isLastRetry = (job['retry_count'] as int) + 1 >= (job['max_retries'] as int);
+        if (printType == 'raw' && isLastRetry &&
+            _storage.getUsbFallbackEnabled() &&
+            (_storage.getUsbFallbackPrinter()?.isNotEmpty ?? false)) {
+          final usbOk = await _osPrinter.sendRawBytes(
+              _storage.getUsbFallbackPrinter()!, bytes,
+              docName: 'SyncResto-Ozet-Kuyruk-${job['order_number'] ?? id}');
+          if (usbOk) {
+            await _db.markCompleted(id);
+            _log.logAction('[PrintQueue] job=$id AĞ başarısız → USB yedek ile basildi');
+            return true;
+          }
+        }
         await _db.markFailed(id, 'TCP basarisiz');
         _log.warning(LogType.error, '[PrintQueue] FAIL job=$id printer=$ip (retry: ${(job['retry_count'] as int) + 1}/${job['max_retries']})');
         if (orderId != null && printType == 'order' && (job['retry_count'] as int) + 1 >= (job['max_retries'] as int)) {

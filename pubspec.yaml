@@ -1,7 +1,7 @@
 name: syncresto_print
 description: "SyncResto Print — Online sipariş yazıcı uygulaması (Marketplace + Web siparişleri otomatik fişe basar)"
 publish_to: 'none'
-version: 1.3.5+22
+version: 1.4.0+23
 
 environment:
   sdk: ^3.11.0
@@ -42,6 +42,11 @@ dependencies:
   path_provider: ^2.1.5
   # 18 May 2026 — yeni ozellikler
   sqflite_common_ffi: ^2.3.6        # Print queue (offline-first, masaustu icin FFI)
+  # 22 Ağu 2026 — USB/OS YEDEK YAZICI (winspool RAW pass-through). Ağ (IP:9100) başarısızsa
+  # özet fişi USB'ye takılı Windows yazıcısına aynı ESC/POS byte'larıyla basılır. Salt-Dart FFI
+  # (native build yok, macOS'ta Platform.isWindows guard'la çağrılmaz). Zaten transitive 5.15.0.
+  win32: ^5.15.0
+  ffi: ^2.1.0
   audioplayers: ^6.5.0              # Ses bildirimi (yeni sipariş)
   url_launcher: ^6.3.2              # Auto-update download URL
   http: ^1.5.0                      # Update version check (Dio yerine basit GET)

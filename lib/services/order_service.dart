@@ -29,6 +29,7 @@ import 'websocket_service.dart';
 import 'sound_service.dart';
 import 'storage_service.dart';
 import 'local_db_service.dart';
+import 'os_printer_service.dart'; // 22 Ağu 2026: ağ başarısızsa USB/OS yazıcı yedeği
 
 class OrderService {
   static final OrderService _instance = OrderService._internal();
@@ -44,6 +45,7 @@ class OrderService {
   final SoundService _sound = SoundService();
   final StorageService _storage = StorageService();
   final LocalDbService _db = LocalDbService();
+  final OsPrinterService _osPrinter = OsPrinterService();
 
   // 28 Haz 2026: çift-basım önleme — bu oturumda işlenen sipariş id'leri.
   // Reconnect telafisi ile WebSocket eventi aynı siparişi iki kez tetiklemesin.
@@ -529,19 +531,28 @@ class OrderService {
       if (ok) {
         _log.logAction('Müşteri özet fişi (online HTML) basildi: $orderNumber → $printerName ($ip)');
       } else {
-        // Başarısız → lokal kuyruğa (raw ESC/POS byte ile retry)
-        await _db.addJob(
-          printType: 'raw',
-          orderId: orderId,
-          orderNumber: orderNumber,
-          printerId: _intOrNull(sp['id']),
-          printerName: printerName,
-          printerIp: ip,
-          printerPort: port,
-          receiptData: { 'raw_base64': base64Encode(bytes) },
-        );
-        _log.warning(LogType.error, 'Özet fişi BASILAMADI, kuyruğa eklendi: $orderNumber → $printerName ($ip)',
-          details: {'order_id': orderId});
+        // 22 Ağu 2026 — AĞ BAŞARISIZ: kuyruğa eklemeden ÖNCE USB/OS yedek yazıcıyı dene.
+        // 🔴 İZOLE: sadece ayar açık + yedek yazıcı seçili + Windows ise. sendRawToIp=false
+        //    (byte'lar ağ yazıcısına ULAŞMADI) olduğu için USB'ye basmak ÇİFT-BASIM üretmez.
+        //    USB başarılıysa kuyruğa HİÇ eklenmez → tek fiziksel çıktı garantisi.
+        final usbOk = await _tryUsbFallback(bytes, orderNumber);
+        if (usbOk) {
+          _log.logAction('Özet fişi AĞ başarısız → USB yedek ile basildi: $orderNumber');
+        } else {
+          // USB yok/kapalı/başarısız → mevcut davranış: lokal kuyruğa (raw ESC/POS retry)
+          await _db.addJob(
+            printType: 'raw',
+            orderId: orderId,
+            orderNumber: orderNumber,
+            printerId: _intOrNull(sp['id']),
+            printerName: printerName,
+            printerIp: ip,
+            printerPort: port,
+            receiptData: { 'raw_base64': base64Encode(bytes) },
+          );
+          _log.warning(LogType.error, 'Özet fişi BASILAMADI, kuyruğa eklendi: $orderNumber → $printerName ($ip)',
+            details: {'order_id': orderId});
+        }
       }
     } catch (e) {
       _log.error(LogType.error, 'Özet fişi hatasi: $e', details: {'order_id': orderId});
@@ -554,5 +565,20 @@ class OrderService {
     if (v is num) return v.toInt();
     if (v is String) return int.tryParse(v);
     return null;
+  }
+
+  /// 22 Ağu 2026 — Ağ (IP:9100) başarısızsa özet fişi USB/OS yazıcısına bas (YEDEK).
+  /// Ayar KAPALIYSA veya yedek yazıcı seçili DEĞİLSE hiçbir şey yapmaz (false döner) →
+  /// çağıran mevcut kuyruk davranışına düşer. Windows-only (OsPrinterService guard'lı).
+  Future<bool> _tryUsbFallback(List<int> bytes, String orderNumber) async {
+    try {
+      if (!_storage.getUsbFallbackEnabled()) return false;
+      final name = _storage.getUsbFallbackPrinter();
+      if (name == null || name.isEmpty) return false;
+      return await _osPrinter.sendRawBytes(name, bytes, docName: 'SyncResto-Ozet-$orderNumber');
+    } catch (e) {
+      _log.warning(LogType.error, 'USB yedek hatasi: $e');
+      return false;
+    }
   }
 }
